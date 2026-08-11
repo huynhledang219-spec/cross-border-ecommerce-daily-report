@@ -6,17 +6,14 @@ _EMPTY_TREND_MESSAGE = "EchoTik 七天日销售额数据为空"
 
 def read_7d_gmv_trend(page) -> list[float]:
     """Select EchoTik's seven-day sales-amount chart and read its daily values."""
-    sales = page.locator("#basic-sales")
     try:
+        sales = page.locator("#basic-sales")
         sales.wait_for(state="visible", timeout=15_000)
-    except Exception as error:
-        raise ValueError(_EMPTY_TREND_MESSAGE) from error
-    page.get_by_role("radio", name="7 天", exact=True).first.check(timeout=15_000)
-    page.wait_for_timeout(3_000)
-    page.get_by_role("radio", name="销售额", exact=True).first.check(timeout=15_000)
-    page.wait_for_timeout(3_000)
-    daily_bars = sales.locator("path[name='日销售额']")
-    try:
+        page.get_by_role("radio", name="7 天", exact=True).first.check(timeout=15_000)
+        page.wait_for_timeout(3_000)
+        page.get_by_role("radio", name="销售额", exact=True).first.check(timeout=15_000)
+        page.wait_for_timeout(3_000)
+        daily_bars = sales.locator("path[name='日销售额']")
         daily_bars.first.wait_for(state="visible", timeout=15_000)
         values = daily_bars.evaluate_all(
             """bars => bars.map(node => {
@@ -36,11 +33,9 @@ def read_7d_gmv_trend(page) -> list[float]:
         ):
             raise ValueError(_EMPTY_TREND_MESSAGE)
         return [round(float(value), 2) for value in values]
-    except (TypeError, ValueError) as error:
+    except Exception as error:
         if str(error) == _EMPTY_TREND_MESSAGE:
             raise
-        raise ValueError(_EMPTY_TREND_MESSAGE) from error
-    except Exception as error:
         raise ValueError(_EMPTY_TREND_MESSAGE) from error
 
 

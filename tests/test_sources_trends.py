@@ -116,6 +116,8 @@ class FakeControl:
         return self
 
     def check(self, **_: object) -> None:
+        if self.page.failing_control == self.name:
+            raise TimeoutError(f"{self.name} control did not become selectable")
         self.page.checked_controls.append(self.name)
 
 
@@ -245,12 +247,14 @@ class FakeEchoTikPage:
         trend_values: list[float | None] | None = None,
         verification_on_detail: bool = False,
         missing_chart: bool = False,
+        failing_control: str | None = None,
     ) -> None:
         self.rows = rows
         self.category_ids_by_final_label = category_ids_by_final_label
         self.trend_values = trend_values or [1, 2, 3, 4, 5, 6, 7]
         self.verification_on_detail = verification_on_detail
         self.missing_chart = missing_chart
+        self.failing_control = failing_control
         self.url = ""
         self.body_text = ""
         self.translation_enabled = False
@@ -426,6 +430,19 @@ class SourceAndTrendTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "EchoTik 七天日销售额数据为空"):
             read_7d_gmv_trend(page)
+
+    def test_read_7d_gmv_trend_converts_control_selection_failures_to_an_empty_result(self) -> None:
+        for control_name in ("7 天", "销售额"):
+            with self.subTest(control_name=control_name):
+                page = FakeEchoTikPage([], {}, failing_control=control_name)
+
+                try:
+                    read_7d_gmv_trend(page)
+                except Exception as error:
+                    self.assertIs(type(error), ValueError)
+                    self.assertEqual(str(error), "EchoTik 七天日销售额数据为空")
+                else:
+                    self.fail("control selection failure was not reported")
 
     def test_selects_only_twenty_echotik_details_by_7d_gmv(self) -> None:
         records = [
