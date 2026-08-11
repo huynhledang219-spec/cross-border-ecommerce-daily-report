@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import pandas as pd
+from openpyxl import Workbook, load_workbook
+from openpyxl.chart import LineChart, Reference
+from openpyxl.styles import Alignment, PatternFill
+
+from scripts.ecommerce_report.workbook import REPORT_HEADERS, inspect_report, write_report
+
+
+REFERENCE_CHART_EXTENT = (4_200_000, 1_260_000)
+
+
+def create_synthetic_template(path: Path) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "每日选品"
+    template_headers = REPORT_HEADERS + ["7天GMV较昨日", "7天销量较昨日"]
+    worksheet.append(template_headers)
+    worksheet.append(["模板行"] * len(template_headers))
+    worksheet.append(["模板续行"] * len(template_headers))
+
+    gold_fill = PatternFill(fill_type="solid", fgColor="FFD700")
+    for cell in worksheet[1]:
+        cell.fill = gold_fill
+    for row in (2, 3):
+        for column in range(1, len(template_headers) + 1):
+            worksheet.cell(row, column).alignment = Alignment(horizontal="left")
+    worksheet.column_dimensions["D"].width = 31.5
+    worksheet.column_dimensions["O"].width = 24.0
+    worksheet.row_dimensions[2].height = 36.0
+    worksheet.row_dimensions[3].height = 29.0
+
+    for column, value in enumerate(range(1, 8), start=16):
+        worksheet.cell(2, column, value)
+    chart = LineChart()
+    chart.width = REFERENCE_CHART_EXTENT[0] / 360_000
+    chart.height = REFERENCE_CHART_EXTENT[1] / 360_000
+    chart.add_data(
+        Reference(worksheet, min_col=16, max_col=22, min_row=2, max_row=2),
+        from_rows=True,
+    )
+    worksheet.add_chart(chart, "O2")
+    workbook.save(path)
+    workbook.close()
+
+
+def normalized_records() -> pd.DataFrame:
+    records: list[dict] = [
+        {
+            "rank": "SKU",
+            "source": "你的库存",
+            "name": "Inventory SKU",
+            "name_cn": "库存商品",
+            "price": 22.99,
+            "diagnostic": "库存诊断",
+        }
+    ]
+    records.extend(
+        {
+            "rank": index,
+            "source": "echotik",
+            "name": f"Echo product {index}",
+            "name_cn": f"页面中文名 {index}",
+            "price": 10 + index,
+            "rating": 4.5,
+            "reviews": index,
+            "gmv": 10_000 - index,
+            "gmv_7d": index,
+            "sold_7d": index * 2,
+            "videos": index + 3,
+            "creators": index + 4,
+            "detail_url": f"https://echotik.example/product/{index}",
+            "diagnostic": f"诊断 {index}",
+            "gmv_trend_7d": [1, 2, 3, 4, 5, 6, index] if index != 22 else None,
+        }
+        for index in range(1, 23)
+    )
+    records.append(
+        {
+            "rank": 23,
+            "source": "Amazon",
+            "name": "Complete English Product Title With Every Important Detail",
+            "name_cn": "不得采用的已有短名",
+            "price": 29.99,
+            "rating": 4.8,
+            "reviews": 1200,
+        }
+    )
+    return pd.DataFrame(records)
+
+
+class WorkbookExportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.template_path = self.root / "synthetic-template.xlsx"
+        self.output_path = self.root / "output" / "daily-report.xlsx"
+        create_synthetic_template(self.template_path)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def write_fixture(self) -> Path:
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="包含每个重要细节的完整英文商品标题",
+        ) as translate:
+            result = write_report(
+                normalized_records(), self.output_path, self.template_path
+            )
+        translate.assert_called_once_with(
+            "Complete English Product Title With Every Important Detail"
+        )
+        return result
+
+    def test_orders_sources_and_places_echotik_top_twenty_by_seven_day_gmv(self) -> None:
+        result = self.write_fixture()
+        worksheet = load_workbook(result, data_only=False).active
+
+        sources = [worksheet.cell(row, 3).value for row in range(2, 26)]
+        self.assertEqual(sources[0], "你的库存")
+        self.assertEqual(sources[1:23], ["echotik"] * 22)
+        self.assertEqual(sources[23], "Amazon")
+        self.assertEqual(
+            [worksheet.cell(row, 10).value for row in range(3, 23)],
+            list(range(22, 2, -1)),
+        )
+        self.assertEqual(
+            [worksheet.cell(row, 2).value for row in range(3, 23)],
+            [f"Top {position}" for position in range(1, 21)],
+        )
+        self.assertIsNone(worksheet.cell(23, 2).value)
+        self.assertIsNone(worksheet.cell(24, 2).value)
+        worksheet.parent.close()
+
+    def test_preserves_complete_names_and_removes_deleted_comparison_columns(self) -> None:
+        result = self.write_fixture()
+        worksheet = load_workbook(result, data_only=False).active
+        headers = [worksheet.cell(1, column).value for column in range(1, 16)]
+
+        self.assertEqual(headers, REPORT_HEADERS)
+        self.assertNotIn("7天GMV较昨日", headers)
+        self.assertNotIn("7天销量较昨日", headers)
+        self.assertEqual(worksheet["E3"].value, "页面中文名 22")
+        self.assertEqual(worksheet["E25"].value, "包含每个重要细节的完整英文商品标题")
+
+        detail_column = worksheet.column_dimensions["N"]
+        self.assertTrue(detail_column.hidden)
+        self.assertEqual(
+            worksheet["N3"].hyperlink.target,
+            "https://echotik.example/product/22",
+        )
+        self.assertTrue(
+            all(
+                worksheet.column_dimensions[worksheet.cell(1, column).column_letter].hidden
+                for column in range(16, 23)
+            )
+        )
+        worksheet.parent.close()
+
+    def test_preserves_template_dimensions_alignment_and_chart_contract(self) -> None:
+        result = self.write_fixture()
+        worksheet = load_workbook(result, data_only=False).active
+
+        self.assertEqual(worksheet["A1"].fill.fgColor.rgb[-6:], "FFD700")
+        self.assertEqual(worksheet.column_dimensions["D"].width, 31.5)
+        self.assertEqual(worksheet.column_dimensions["O"].width, 24.0)
+        self.assertEqual(worksheet.row_dimensions[2].height, 36.0)
+        self.assertEqual(worksheet.row_dimensions[25].height, 29.0)
+        self.assertEqual(worksheet["A2"].alignment.horizontal, "left")
+        self.assertTrue(
+            all(
+                worksheet.cell(row, column).alignment.horizontal == "left"
+                for row in range(2, 26)
+                for column in range(1, 16)
+            )
+        )
+        self.assertEqual(len(worksheet._charts), 19)
+        self.assertTrue(
+            all(
+                (chart.anchor.ext.cx, chart.anchor.ext.cy) == REFERENCE_CHART_EXTENT
+                for chart in worksheet._charts
+            )
+        )
+        self.assertTrue(all(chart.visible_cells_only is False for chart in worksheet._charts))
+        self.assertTrue(all(chart.anchor._from.col == 14 for chart in worksheet._charts))
+        self.assertEqual(
+            [chart.anchor._from.row + 1 for chart in worksheet._charts],
+            list(range(4, 23)),
+        )
+        self.assertEqual(
+            [chart.series[0].val.numRef.f for chart in worksheet._charts],
+            [f"'每日选品'!$P${row}:$V${row}" for row in range(4, 23)],
+        )
+        worksheet.parent.close()
+
+    def test_missing_trend_writes_data_empty_without_a_chart(self) -> None:
+        result = self.write_fixture()
+        worksheet = load_workbook(result, data_only=False).active
+
+        self.assertEqual(worksheet["B3"].value, "Top 1")
+        self.assertEqual(worksheet["O3"].value, "数据为空")
+        chart_rows = {chart.anchor._from.row + 1 for chart in worksheet._charts}
+        self.assertNotIn(3, chart_rows)
+        worksheet.parent.close()
+
+    def test_inspect_report_returns_a_stable_public_audit_summary(self) -> None:
+        result = self.write_fixture()
+
+        inspection = inspect_report(result)
+
+        self.assertEqual(inspection.path, result)
+        self.assertEqual(inspection.headers, tuple(REPORT_HEADERS))
+        self.assertEqual(inspection.source_order, ("你的库存", "echotik", "Amazon"))
+        self.assertEqual(
+            inspection.hidden_columns,
+            ("EchoTik详情链接", "趋势日1", "趋势日2", "趋势日3", "趋势日4", "趋势日5", "趋势日6", "趋势日7"),
+        )
+        self.assertEqual(inspection.chart_count, 19)
+        self.assertEqual(
+            inspection.chart_extents,
+            (REFERENCE_CHART_EXTENT,) * 19,
+        )
+        self.assertEqual(inspection.visible_cells_only, (False,) * 19)
+        self.assertEqual(inspection.formula_errors, ())
+
+    def test_rejects_using_the_template_as_the_output_without_changing_it(self) -> None:
+        original = self.template_path.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "不能与模板路径相同"):
+            write_report(normalized_records(), self.template_path, self.template_path)
+
+        self.assertEqual(self.template_path.read_bytes(), original)
+
+    def test_translation_failure_does_not_replace_an_existing_report(self) -> None:
+        self.output_path.parent.mkdir(parents=True)
+        original = b"existing valid report"
+        self.output_path.write_bytes(original)
+
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            side_effect=RuntimeError("translation unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "translation unavailable"):
+                write_report(normalized_records(), self.output_path, self.template_path)
+
+        self.assertEqual(self.output_path.read_bytes(), original)
+
+    def test_inspection_conservatively_reports_formulas_and_literal_errors_on_all_sheets(self) -> None:
+        workbook = load_workbook(self.template_path)
+        audit_sheet = workbook.create_sheet("审计")
+        audit_sheet["A1"] = "=1/0"
+        audit_sheet["A2"] = "#DIV/0!"
+        workbook.save(self.template_path)
+        workbook.close()
+
+        inspection = inspect_report(self.template_path)
+
+        self.assertEqual(
+            inspection.formula_errors,
+            ("审计!A1:=1/0", "审计!A2:#DIV/0!"),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
