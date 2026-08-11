@@ -1,0 +1,12 @@
+# Keep runtime data outside this Skill directory.
+output_dir: ../../runtime/reports
+profile_dir: ../../runtime/browser-profile
+template_path: ../assets/report-template.xlsx
+detail_limit: 20
+trend_days: 7
+pages_per_category: 10
+
+# Sign in manually in the isolated browser profile the first time Chrome opens.
+categories:
+  宠物清洁美容: "816392"
+  宠物服饰: "813960"
