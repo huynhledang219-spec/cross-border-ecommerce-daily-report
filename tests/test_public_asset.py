@@ -95,6 +95,17 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _manifest_is_allowlisted(member_names: list[str]) -> bool:
+    unique_names = frozenset(member_names)
+    return all(
+        (
+            len(member_names) == 11,
+            len(member_names) == len(unique_names),
+            unique_names == EXPECTED_PARTS,
+        )
+    )
+
+
 def _relationship_target(rels_part: str, target: str) -> str:
     if rels_part == "_rels/.rels":
         base = PurePosixPath()
@@ -140,6 +151,14 @@ def _header_style_is_approved(cell) -> bool:
 
 
 class PublicWorkbookAssetTests(unittest.TestCase):
+    def test_manifest_check_rejects_a_duplicate_allowlisted_part(self) -> None:
+        member_names = list(EXPECTED_PARTS)
+        member_names.append("xl/workbook.xml")
+        self.assertFalse(
+            _manifest_is_allowlisted(member_names),
+            "ZIP manifest check accepted a duplicate allowlisted part",
+        )
+
     def test_contains_exactly_the_approved_visible_text(self) -> None:
         _assert_asset_exists(self)
         self.assertTrue(
@@ -212,8 +231,12 @@ class PublicWorkbookAssetTests(unittest.TestCase):
     def test_zip_manifest_content_types_relationships_and_text_are_allowlisted(self) -> None:
         _assert_asset_exists(self)
         with ZipFile(ASSET_PATH) as archive:
-            names = frozenset(archive.namelist())
-            self.assertTrue(names == EXPECTED_PARTS, "ZIP manifest differs from the exact allowlist")
+            member_names = archive.namelist()
+            self.assertTrue(
+                _manifest_is_allowlisted(member_names),
+                "ZIP manifest differs from the exact allowlist",
+            )
+            names = frozenset(member_names)
             self.assertTrue(
                 all(not name.startswith("docProps/") for name in names),
                 "ZIP contains document properties",
