@@ -7,6 +7,16 @@ trend_days: 7
 pages_per_category: 10
 
 # Sign in manually in the isolated browser profile the first time Chrome opens.
-categories:
-  猫狗清洁美容: "816392"
-  猫狗服饰: "813960"
+# Before adding a category, an Agent must confirm its full path and ID on a visible EchoTik page.
+echotik_categories:
+  - path: ["宠物用品", "猫狗配件", "猫狗清洁美容"]
+    id: "816392"
+  - path: ["宠物用品", "猫狗配件", "猫狗服饰"]
+    id: "813960"
+
+# Before adding a category, an Agent must confirm the Amazon URL.
+amazon_categories:
+  - name: Pet Grooming Supplies
+    url: https://www.amazon.com/s?k=pet+grooming+supplies&i=pets
+  - name: Pet Clothing & Accessories
+    url: https://www.amazon.com/s?k=pet+clothing+accessories&i=pets

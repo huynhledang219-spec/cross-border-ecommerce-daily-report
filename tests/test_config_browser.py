@@ -8,7 +8,7 @@ from scripts.ecommerce_report.browser import (
     chrome_launch_options,
     open_echotik_context,
 )
-from scripts.ecommerce_report.config import RuntimeConfig
+from scripts.ecommerce_report.config import AmazonCategory, EchoTikCategory, RuntimeConfig
 
 
 class RecordingChromium:
@@ -42,7 +42,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
                 "output_dir": "./runtime/reports",
                 "profile_dir": "./runtime/browser-profile",
                 "template_path": "./assets/report-template.xlsx",
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
 
@@ -56,17 +55,23 @@ class ConfigAndBrowserTests(unittest.TestCase):
         config_path.write_text(
             "output_dir: ./runtime/reports\n"
             "profile_dir: ./runtime/browser-profile\n"
-            "categories:\n"
-            '  猫狗清洁美容: "816392"\n'
-            '  猫狗服饰: "813960"\n',
+            "echotik_categories:\n"
+            "  - path: [Home & Garden, Kitchen]\n"
+            '    id: "123456"\n'
+            "amazon_categories:\n"
+            "  - name: Kitchen\n"
+            "    url: https://www.amazon.com/kitchen/b?node=1055398\n",
             encoding="utf-8",
         )
 
         config = RuntimeConfig.load(config_path)
 
         self.assertEqual(config.output_dir, self.base / "runtime" / "reports")
-        self.assertEqual(config.categories, ("猫狗清洁美容", "猫狗服饰"))
-        config.validate()
+        self.assertEqual(config.echotik_categories, (EchoTikCategory(("Home & Garden", "Kitchen"), "123456"),))
+        self.assertEqual(
+            config.amazon_categories,
+            (AmazonCategory("Kitchen", "https://www.amazon.com/kitchen/b?node=1055398"),),
+        )
 
     def test_example_configuration_keeps_runtime_data_outside_the_skill(self) -> None:
         """Changing the example back to Skill-local runtime paths would fail this test."""
@@ -76,6 +81,14 @@ class ConfigAndBrowserTests(unittest.TestCase):
         config.validate()
         self.assertFalse(config.output_dir.is_relative_to(skill_directory))
         self.assertFalse(config.profile_dir.is_relative_to(skill_directory))
+        self.assertEqual(
+            config.echotik_categories,
+            (
+                EchoTikCategory(("宠物用品", "猫狗配件", "猫狗清洁美容"), "816392"),
+                EchoTikCategory(("宠物用品", "猫狗配件", "猫狗服饰"), "813960"),
+            ),
+        )
+        self.assertTrue(all(category.url.startswith("https://www.amazon.com/") for category in config.amazon_categories))
 
     def test_load_rejects_invalid_detail_limit(self) -> None:
         """Omitting validation from load would let an invalid limit through."""
@@ -97,12 +110,17 @@ class ConfigAndBrowserTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "output_dir must not be inside the Skill directory"):
             RuntimeConfig.load(config_path)
 
-    def test_load_rejects_an_unknown_category(self) -> None:
-        """Omitting validation from load would permit an unknown category."""
-        config_path = self.base / "unknown-category.yaml"
-        config_path.write_text("categories:\n  - unknown category\n", encoding="utf-8")
+    def test_load_rejects_an_invalid_amazon_url(self) -> None:
+        """Omitting validation from load would permit a non-HTTPS Amazon URL."""
+        config_path = self.base / "invalid-amazon-url.yaml"
+        config_path.write_text(
+            "amazon_categories:\n"
+            "  - name: Books\n"
+            "    url: http://www.amazon.com/books\n",
+            encoding="utf-8",
+        )
 
-        with self.assertRaisesRegex(ValueError, "unsupported category: unknown category"):
+        with self.assertRaisesRegex(ValueError, "Amazon category URL must use HTTPS"):
             RuntimeConfig.load(config_path)
 
     def test_public_config_enforces_verified_limits(self) -> None:
@@ -114,7 +132,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
                 "profile_dir": "./runtime/browser-profile",
                 "detail_limit": 21,
                 "trend_days": 7,
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
 
@@ -130,7 +147,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
                 "profile_dir": "./runtime/browser-profile",
                 "detail_limit": 20,
                 "trend_days": 8,
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
 
@@ -145,7 +161,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
             {
                 "output_dir": str(skill_directory / "runtime" / "reports"),
                 "profile_dir": "./runtime/browser-profile",
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
 
@@ -160,7 +175,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
             {
                 "output_dir": "./runtime/reports",
                 "profile_dir": str(skill_directory / "runtime" / "browser-profile"),
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
 
@@ -184,23 +198,73 @@ class ConfigAndBrowserTests(unittest.TestCase):
                             "output_dir": "./runtime/reports",
                             "profile_dir": "./runtime/browser-profile",
                             field: value,
-                            "categories": ["猫狗清洁美容", "猫狗服饰"],
                         },
                     )
 
-    def test_public_config_rejects_unknown_category_labels(self) -> None:
-        """Removing category allow-list validation would make this test fail."""
+    def test_public_config_accepts_non_pet_categories(self) -> None:
+        """Reintroducing a product-specific allow-list would reject this valid config."""
         config = RuntimeConfig.from_mapping(
             self.base,
             {
                 "output_dir": "./runtime/reports",
                 "profile_dir": "./runtime/browser-profile",
-                "categories": ["unknown category"],
+                "echotik_categories": [
+                    {"path": ["Home & Garden", "Kitchen"], "id": "123456"},
+                ],
+                "amazon_categories": [
+                    {"name": "Books", "url": "https://www.amazon.com/books-used-books-textbooks/b?node=283155"},
+                ],
             },
         )
 
-        with self.assertRaisesRegex(ValueError, "unsupported category: unknown category"):
+        config.validate()
+        self.assertEqual(config.echotik_categories[0].path, ("Home & Garden", "Kitchen"))
+        self.assertEqual(config.amazon_categories[0].name, "Books")
+
+    def test_echotik_category_requires_a_non_empty_visible_path(self) -> None:
+        """Dropping path validation would accept empty or invisible menu labels."""
+        for path in ([], ["Home", ""]):
+            with self.subTest(path=path):
+                config = RuntimeConfig.from_mapping(
+                    self.base,
+                    {"echotik_categories": [{"path": path, "id": "123456"}]},
+                )
+                with self.assertRaisesRegex(ValueError, "EchoTik category path must contain non-empty labels"):
+                    config.validate()
+
+    def test_echotik_category_id_must_be_numeric(self) -> None:
+        """Dropping ID validation would accept a label or malformed identifier."""
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {"echotik_categories": [{"path": ["Home", "Kitchen"], "id": "12A456"}]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "EchoTik category ID must contain digits only"):
             config.validate()
+
+    def test_amazon_category_requires_a_name_and_https_url(self) -> None:
+        """Dropping Amazon field validation would accept unusable records."""
+        cases = (
+            ({"name": "", "url": "https://www.amazon.com/books"}, "Amazon category name must not be empty"),
+            ({"name": "Books", "url": "http://www.amazon.com/books"}, "Amazon category URL must use HTTPS"),
+            ({"name": "Books", "url": "https:"}, "Amazon category URL must use HTTPS"),
+        )
+        for category, message in cases:
+            with self.subTest(category=category):
+                config = RuntimeConfig.from_mapping(self.base, {"amazon_categories": [category]})
+                with self.assertRaisesRegex(ValueError, message):
+                    config.validate()
+
+    def test_each_source_requires_at_least_one_category(self) -> None:
+        """Removing source minimums would permit a report with no source coverage."""
+        for field, message in (
+            ("echotik_categories", "at least one EchoTik category is required"),
+            ("amazon_categories", "at least one Amazon category is required"),
+        ):
+            with self.subTest(field=field):
+                config = RuntimeConfig.from_mapping(self.base, {field: []})
+                with self.assertRaisesRegex(ValueError, message):
+                    config.validate()
 
     def test_browser_context_uses_the_isolated_profile_and_chrome_options(self) -> None:
         """Using a shared profile or omitting Chrome's isolation options would fail this test."""
@@ -209,7 +273,6 @@ class ConfigAndBrowserTests(unittest.TestCase):
             {
                 "output_dir": "./runtime/reports",
                 "profile_dir": "./runtime/browser-profile",
-                "categories": ["猫狗清洁美容", "猫狗服饰"],
             },
         )
         playwright = RecordingPlaywright()
