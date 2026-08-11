@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import unittest
 from contextlib import redirect_stderr
@@ -79,8 +80,13 @@ class PipelineTests(unittest.TestCase):
     @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
     @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
+    @patch(
+        "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+        return_value="亚马逊完整商品标题",
+    )
     def test_an_empty_top_trend_does_not_block_a_later_top_twenty_chart(
         self,
+        translate_amazon: Mock,
         playwright_session: Mock,
         open_context: Mock,
         scrape_echotik: Mock,
@@ -109,7 +115,9 @@ class PipelineTests(unittest.TestCase):
                 },
             ]
         )
-        scrape_amazon.return_value = pd.DataFrame()
+        scrape_amazon.return_value = pd.DataFrame(
+            [{"source": "Amazon", "name": "Complete Amazon product title"}]
+        )
 
         result = run_pipeline(self.config, self.output_path)
 
@@ -217,13 +225,72 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(amazon_raised.exception.stage, "Amazon采集")
 
         scrape_amazon.side_effect = None
-        scrape_amazon.return_value = pd.DataFrame()
+        scrape_echotik.return_value = pd.DataFrame(
+            [{"source": "echotik", "name": "EchoTik item", "gmv_7d": 1}]
+        )
+        scrape_amazon.return_value = pd.DataFrame(
+            [{"source": "Amazon", "name": "Amazon item"}]
+        )
         write_report_mock.side_effect = RuntimeError("workbook unavailable")
 
         with self.assertRaises(PipelineError) as export_raised:
             run_pipeline(self.config, self.output_path)
 
         self.assertEqual(export_raised.exception.stage, "导出报表")
+
+    @patch("scripts.ecommerce_report.pipeline.write_report")
+    @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
+    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
+    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.pipeline._playwright_session")
+    def test_an_empty_required_source_never_exports_a_report(
+        self,
+        playwright_session: Mock,
+        open_context: Mock,
+        scrape_echotik: Mock,
+        scrape_amazon: Mock,
+        write_report_mock: Mock,
+    ) -> None:
+        """Concatenating whichever source is nonempty would hide a failed required source."""
+        playwright_session.return_value = _PlaywrightSession()
+        open_context.return_value = Mock()
+        one_row = pd.DataFrame([{"source": "source", "name": "product"}])
+
+        for empty_name, expected_stage in (
+            ("echotik", "EchoTik采集"),
+            ("amazon", "Amazon采集"),
+        ):
+            with self.subTest(empty_name=empty_name):
+                scrape_echotik.return_value = (
+                    pd.DataFrame() if empty_name == "echotik" else one_row
+                )
+                scrape_amazon.return_value = (
+                    pd.DataFrame() if empty_name == "amazon" else one_row
+                )
+
+                with self.assertRaises(PipelineError) as raised:
+                    run_pipeline(self.config, self.output_path)
+
+                self.assertEqual(raised.exception.stage, expected_stage)
+
+        write_report_mock.assert_not_called()
+
+    def test_pipeline_rejects_an_explicit_output_inside_the_skill(self) -> None:
+        """A manual --output override must not bypass the runtime isolation policy."""
+        skill_root = Path(__file__).resolve().parents[1]
+
+        with patch("scripts.ecommerce_report.pipeline._playwright_session") as session:
+            try:
+                run_pipeline(self.config, skill_root / "generated-report.xlsx")
+            except Exception as error:
+                self.assertIs(type(error), ValueError)
+                self.assertEqual(
+                    str(error),
+                    "output path must not be inside the Skill directory",
+                )
+            else:
+                self.fail("Skill-local output was accepted")
+        session.assert_not_called()
 
 
 class DailyJobTests(unittest.TestCase):
@@ -361,6 +428,25 @@ class DailyJobTests(unittest.TestCase):
                 if expected_reason is not None:
                     self.assertEqual(lines[2], f"原因: {expected_reason}")
 
+    def test_skill_local_invalid_config_uses_an_explicit_external_failure_directory(self) -> None:
+        """Falling back to config.parent would write a failure artifact into the Skill."""
+        skill_config = Path(__file__).resolve().parents[1] / "invalid-config.yaml"
+        local_app_data = self.root / "local-app-data"
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}):
+            with patch("scripts.ecommerce_report.daily._write_failure") as write_failure:
+                with self.assertRaises(daily_module.DailyJobError) as raised:
+                    run_daily_job(skill_config, self.day)
+
+        expected = (
+            local_app_data
+            / "CrossBorderEcommerceDailyReport"
+            / "数据报表_失败原因"
+            / "2026.8.11失败原因.txt"
+        )
+        self.assertEqual(raised.exception.failure_path, expected)
+        self.assertEqual(write_failure.call_args.args[0], expected)
+
     def test_sanitize_reason_never_echoes_credentials_or_local_user_paths(self) -> None:
         """Returning any sensitive assignment or local path would leak operator data."""
         secrets = (
@@ -391,6 +477,21 @@ class DailyJobTests(unittest.TestCase):
             daily_module._sanitize_reason(RuntimeError(safe_url)), safe_url
         )
 
+    def test_sanitize_reason_masks_email_phone_and_url_query_values(self) -> None:
+        """Keeping identifiers or query values would leak account data into failure files."""
+        reason = daily_module._sanitize_reason(
+            RuntimeError(
+                "请求 user@example.com 或 13800138000 访问失败: "
+                "https://example.com/status?session=private-value&item=42"
+            )
+        )
+
+        self.assertNotIn("user@example.com", reason)
+        self.assertNotIn("13800138000", reason)
+        self.assertNotIn("private-value", reason)
+        self.assertNotIn("item=42", reason)
+        self.assertIn("访问失败", reason)
+
 
 class EntrypointTests(unittest.TestCase):
     @patch("scripts.run_report.run_pipeline")
@@ -409,6 +510,40 @@ class EntrypointTests(unittest.TestCase):
         load_config.assert_called_once_with(Path("settings.yaml"))
         run_pipeline_mock.assert_called_once_with(config, Path("chosen.xlsx"))
 
+    @patch("scripts.run_report.run_pipeline")
+    @patch("scripts.run_report.RuntimeConfig.load")
+    def test_manual_entrypoint_uses_the_sanitized_failure_exit(
+        self, load_config: Mock, run_pipeline_mock: Mock
+    ) -> None:
+        """Letting manual failures escape would print traceback, accounts, and paths."""
+        load_config.return_value = Mock(output_dir=Path("reports"))
+        run_pipeline_mock.side_effect = PipelineError(
+            "Amazon采集",
+            RuntimeError(
+                "user@example.com 13800138000 "
+                "https://example.com/status?token=private "
+                r"C:\Users\Alice\runner.py"
+            ),
+        )
+        stderr = io.StringIO()
+
+        try:
+            with redirect_stderr(stderr):
+                code = run_report_main(
+                    ["--config", "settings.yaml", "--output", "chosen.xlsx"]
+                )
+        except Exception as error:
+            self.fail(f"manual failure escaped the CLI boundary: {type(error).__name__}")
+
+        text = stderr.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("Amazon采集", text)
+        self.assertNotIn("user@example.com", text)
+        self.assertNotIn("13800138000", text)
+        self.assertNotIn("private", text)
+        self.assertNotIn("C:\\Users", text)
+        self.assertNotIn("Traceback", text)
+
     @patch("scripts.run_daily.run_daily_job")
     def test_scheduled_entrypoint_returns_zero_only_on_success(
         self, run_daily_job_mock: Mock
@@ -424,10 +559,10 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotIn("private details", stderr.getvalue())
 
     @patch("scripts.run_daily.run_daily_job")
-    def test_scheduled_entrypoint_reports_the_actual_failure_record_path(
+    def test_scheduled_entrypoint_reports_only_a_relative_failure_record_location(
         self, run_daily_job_mock: Mock
     ) -> None:
-        """A generic output-directory claim would send operators to the wrong place."""
+        """Printing the absolute record path would expose the local account directory."""
         failure_path = Path("C:/runtime/config/数据报表_失败原因/2026.8.11失败原因.txt")
         run_daily_job_mock.side_effect = daily_module.DailyJobError(
             failure_path, "读取配置"
@@ -438,8 +573,9 @@ class EntrypointTests(unittest.TestCase):
             code = run_daily_main(["--config", "C:/runtime/config/missing.yaml"])
 
         self.assertEqual(code, 1)
-        self.assertIn(str(failure_path), stderr.getvalue())
-        self.assertNotIn("output_dir", stderr.getvalue())
+        self.assertIn("读取配置", stderr.getvalue())
+        self.assertIn("2026.8.11失败原因.txt", stderr.getvalue())
+        self.assertNotIn("C:/runtime", stderr.getvalue())
 
 
 class SchedulerScriptTests(unittest.TestCase):

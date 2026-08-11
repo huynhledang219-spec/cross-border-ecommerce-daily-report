@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
 from openpyxl.styles import Alignment, PatternFill
 
+from scripts.ecommerce_report import workbook as workbook_module
 from scripts.ecommerce_report.workbook import REPORT_HEADERS, inspect_report, write_report
 
 
@@ -230,6 +231,116 @@ class WorkbookExportTests(unittest.TestCase):
         self.assertEqual(inspection.visible_cells_only, (False,) * 19)
         self.assertEqual(inspection.formula_errors, ())
 
+    def test_verify_report_accepts_a_complete_contract_conforming_report(self) -> None:
+        """A verifier that cannot certify the generated contract is not usable as a gate."""
+        result = self.write_fixture()
+
+        try:
+            inspection = workbook_module.verify_report(result)
+        except AttributeError:
+            self.fail("verify_report is not implemented")
+
+        self.assertEqual(inspection.path, result)
+
+    def test_verify_report_rejects_a_changed_public_header(self) -> None:
+        """Relying on a readable XLSX alone would accept a broken column contract."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["J1"] = "错误7天GMV"
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "表头"):
+            workbook_module.verify_report(result)
+
+    def test_verify_report_rejects_top_labels_not_matching_descending_gmv(self) -> None:
+        """Checking only chart count would accept mislabeled or unsorted Top products."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        worksheet = workbook.active
+        worksheet["J3"], worksheet["J4"] = worksheet["J4"].value, worksheet["J3"].value
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "Top 20"):
+            workbook_module.verify_report(result)
+
+    def test_verify_report_rejects_a_top_row_without_chart_or_data_empty_diagnostic(self) -> None:
+        """Counting charts globally would miss a chart attached to the wrong Top identity."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        worksheet = workbook.active
+        worksheet._charts = worksheet._charts[1:]
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "趋势图"):
+            workbook_module.verify_report(result)
+
+    def test_verify_report_rejects_visible_helper_or_detail_columns(self) -> None:
+        """Visible helper data would violate the published workbook layout."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active.column_dimensions["P"].hidden = False
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "隐藏列"):
+            workbook_module.verify_report(result)
+
+    def test_verify_report_rejects_missing_or_visibly_truncated_amazon_translation(self) -> None:
+        """A source row existing does not prove its promised complete Chinese title exists."""
+        for invalid_translation in (None, "被截断的中文名称..."):
+            with self.subTest(invalid_translation=invalid_translation):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                workbook.active["E25"] = invalid_translation
+                workbook.save(result)
+                workbook.close()
+
+                with self.assertRaisesRegex(ValueError, "Amazon 中文全称"):
+                    workbook_module.verify_report(result)
+
+    def test_verify_report_rejects_an_output_inside_the_skill(self) -> None:
+        """A structurally valid workbook is still unsafe when published in the Skill tree."""
+        packaged_template = Path(__file__).resolve().parents[1] / "assets" / "report-template.xlsx"
+
+        with self.assertRaisesRegex(ValueError, "Skill directory"):
+            workbook_module.verify_report(packaged_template)
+
+    def test_verify_report_rejects_sensitive_account_content(self) -> None:
+        """A valid layout must not certify account identifiers embedded in workbook text."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["D25"] = "Contact user@example.com for private access"
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "敏感"):
+            workbook_module.verify_report(result)
+
+    def test_write_report_runs_verification_before_replacing_existing_output(self) -> None:
+        """Leaving verification as an optional command would allow unsafe output publication."""
+        self.output_path.parent.mkdir(parents=True)
+        original = b"existing verified report"
+        self.output_path.write_bytes(original)
+        records = pd.DataFrame(
+            [
+                {
+                    "source": "echotik",
+                    "name": "Contact user@example.com",
+                    "name_cn": "敏感测试",
+                    "gmv_7d": 1,
+                    "diagnostic": "数据为空",
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(ValueError, "敏感"):
+            write_report(records, self.output_path, self.template_path)
+
+        self.assertEqual(self.output_path.read_bytes(), original)
+
     def test_rejects_using_the_template_as_the_output_without_changing_it(self) -> None:
         original = self.template_path.read_bytes()
 
@@ -251,6 +362,52 @@ class WorkbookExportTests(unittest.TestCase):
                 write_report(normalized_records(), self.output_path, self.template_path)
 
         self.assertEqual(self.output_path.read_bytes(), original)
+
+    def test_dynamic_web_values_are_saved_as_literal_text_not_formulas(self) -> None:
+        """Writing a leading equals sign as a formula would permit workbook injection."""
+        records = pd.DataFrame(
+            [
+                {
+                    "source": "echotik",
+                    "name": '=HYPERLINK("https://attacker.invalid","click")',
+                    "name_cn": "=1+1",
+                    "gmv_7d": 1,
+                    "detail_url": "https://echotik.example/product/1",
+                }
+            ]
+        )
+
+        result = write_report(records, self.output_path, self.template_path)
+
+        workbook = load_workbook(result, data_only=False)
+        try:
+            worksheet = workbook.active
+            self.assertEqual(worksheet["D2"].value, '=HYPERLINK("https://attacker.invalid","click")')
+            self.assertEqual(worksheet["D2"].data_type, "s")
+            self.assertEqual(worksheet["E2"].value, "=1+1")
+            self.assertEqual(worksheet["E2"].data_type, "s")
+        finally:
+            workbook.close()
+
+    def test_a_new_formula_found_after_save_never_replaces_an_existing_report(self) -> None:
+        """Removing the post-save formula gate would publish a corrupted workbook."""
+        self.output_path.parent.mkdir(parents=True)
+        original_report = b"existing valid report"
+        self.output_path.write_bytes(original_report)
+        original_save = Workbook.save
+
+        def save_then_inject_formula(workbook, filename) -> None:
+            original_save(workbook, filename)
+            injected = load_workbook(filename)
+            injected.active["D2"] = "=WEBSERVICE(\"https://attacker.invalid\")"
+            original_save(injected, filename)
+            injected.close()
+
+        with patch.object(Workbook, "save", save_then_inject_formula):
+            with self.assertRaisesRegex(ValueError, "模板之外的公式"):
+                write_report(pd.DataFrame(), self.output_path, self.template_path)
+
+        self.assertEqual(self.output_path.read_bytes(), original_report)
 
     def test_inspection_conservatively_reports_formulas_and_literal_errors_on_all_sheets(self) -> None:
         workbook = load_workbook(self.template_path)

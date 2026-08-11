@@ -102,7 +102,11 @@ class ConfigAndBrowserTests(unittest.TestCase):
     def test_example_configuration_keeps_runtime_data_outside_the_skill(self) -> None:
         """Changing the example back to Skill-local runtime paths would fail this test."""
         skill_directory = Path(__file__).resolve().parents[1]
-        config = RuntimeConfig.load(skill_directory / "scripts" / "config.example.yaml")
+        local_copy = self.base / "config.yaml"
+        local_copy.write_bytes(
+            (skill_directory / "scripts" / "config.example.yaml").read_bytes()
+        )
+        config = RuntimeConfig.load(local_copy)
 
         config.validate()
         self.assertFalse(config.output_dir.is_relative_to(skill_directory))
@@ -192,6 +196,21 @@ class ConfigAndBrowserTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "output_dir must not be inside the Skill directory"):
             config.validate()
+
+    def test_configuration_file_is_rejected_before_loading_when_inside_skill(self) -> None:
+        """Opening a Skill-local config first could consume committed secrets before rejecting it."""
+        skill_directory = Path(__file__).resolve().parents[1]
+
+        try:
+            RuntimeConfig.load(skill_directory / "private-config.yaml")
+        except Exception as error:
+            self.assertIs(type(error), ValueError)
+            self.assertEqual(
+                str(error),
+                "configuration file must not be inside the Skill directory",
+            )
+        else:
+            self.fail("Skill-local configuration was accepted")
 
     def test_public_config_rejects_a_profile_inside_the_skill(self) -> None:
         """Removing the profile-directory guard would make this test fail."""

@@ -8,9 +8,18 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from scripts.ecommerce_report.amazon import scrape_amazon, translate_amazon_title_to_chinese
-from scripts.ecommerce_report.config import AmazonCategory, EchoTikCategory, RuntimeConfig
+from scripts.ecommerce_report.config import (
+    DEFAULT_AMAZON_CATEGORIES,
+    AmazonCategory,
+    EchoTikCategory,
+    RuntimeConfig,
+)
 from scripts.ecommerce_report.echotik import parse_echotik_row, scrape_echotik
-from scripts.ecommerce_report.trends import read_7d_gmv_trend, select_top_detail_rows
+from scripts.ecommerce_report.trends import (
+    TrendDataEmpty,
+    read_7d_gmv_trend,
+    select_top_detail_rows,
+)
 
 
 class FakeAmazonElement:
@@ -51,6 +60,11 @@ class FakeAmazonPage:
             return [FakeAmazonItem()]
         return []
 
+    def locator(self, selector: str):
+        if selector != "body":
+            raise AssertionError(selector)
+        return FakeAmazonElement("")
+
     def close(self) -> None:
         self.closed = True
 
@@ -61,6 +75,39 @@ class FakeAmazonContext:
 
     def new_page(self) -> FakeAmazonPage:
         return self.page
+
+
+class FakeAmazonSearchItem(FakeAmazonItem):
+    VALUES = {
+        "h2 a span": "A search result complete title",
+        "span.a-price span.a-offscreen": "$17.25",
+        "span.a-icon-alt": "4.6 out of 5 stars",
+        "span.a-size-base.s-underline-text": "987",
+    }
+
+
+class FakeAmazonSearchPage(FakeAmazonPage):
+    def query_selector_all(self, selector: str) -> list[FakeAmazonItem]:
+        if selector == "[data-component-type='s-search-result']":
+            return [FakeAmazonSearchItem()]
+        return []
+
+
+class FailingAmazonNavigationPage(FakeAmazonPage):
+    def goto(self, url: str, **_: object) -> None:
+        raise TimeoutError("navigation timed out")
+
+
+class FakeAmazonBody:
+    def inner_text(self) -> str:
+        return "Enter the characters you see below"
+
+
+class ChallengedAmazonPage(FakeAmazonPage):
+    def locator(self, selector: str) -> FakeAmazonBody:
+        if selector != "body":
+            raise AssertionError(selector)
+        return FakeAmazonBody()
 
 
 class FakeResponse:
@@ -246,6 +293,7 @@ class FakeEchoTikPage:
         category_ids_by_final_label: dict[str, str],
         trend_values: list[float | None] | None = None,
         verification_on_detail: bool = False,
+        verification_on_listing: bool = False,
         missing_chart: bool = False,
         failing_control: str | None = None,
     ) -> None:
@@ -253,6 +301,7 @@ class FakeEchoTikPage:
         self.category_ids_by_final_label = category_ids_by_final_label
         self.trend_values = trend_values or [1, 2, 3, 4, 5, 6, 7]
         self.verification_on_detail = verification_on_detail
+        self.verification_on_listing = verification_on_listing
         self.missing_chart = missing_chart
         self.failing_control = failing_control
         self.url = ""
@@ -269,6 +318,8 @@ class FakeEchoTikPage:
         self.navigations.append(url)
         if "/product/" in url and self.verification_on_detail:
             self.body_text = "请完成验证"
+        elif "/products" in url and self.verification_on_listing:
+            self.body_text = "真人验证"
         else:
             self.body_text = ""
 
@@ -367,6 +418,40 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(frame["name"].tolist(), ["A complete product title"] * 2)
         self.assertTrue(context.page.closed)
 
+    def test_default_amazon_search_pages_use_search_result_selectors(self) -> None:
+        """Keeping only bestseller selectors would make every bundled /s URL empty."""
+        context = FakeAmazonContext()
+        context.page = FakeAmazonSearchPage()
+
+        frame = scrape_amazon(context, (DEFAULT_AMAZON_CATEGORIES[0],))
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(frame["name"].tolist(), ["A search result complete title"])
+        self.assertEqual(frame["price"].tolist(), [17.25])
+        self.assertEqual(frame["reviews"].tolist(), [987])
+
+    def test_amazon_navigation_failure_is_not_silently_returned_as_empty(self) -> None:
+        """Continuing after every category navigation fails would publish a false success."""
+        context = FakeAmazonContext()
+        context.page = FailingAmazonNavigationPage()
+
+        with self.assertRaisesRegex(RuntimeError, "Amazon 类目导航失败: Books"):
+            scrape_amazon(
+                context,
+                (AmazonCategory("Books", "https://www.amazon.com/s?k=books"),),
+            )
+
+    def test_amazon_human_challenge_stops_collection(self) -> None:
+        """Treating a CAPTCHA page as an empty category would conceal required user action."""
+        context = FakeAmazonContext()
+        context.page = ChallengedAmazonPage()
+
+        with self.assertRaisesRegex(RuntimeError, "Amazon 出现人工验证"):
+            scrape_amazon(
+                context,
+                (AmazonCategory("Books", "https://www.amazon.com/s?k=books"),),
+            )
+
     def test_amazon_translation_sends_the_complete_normalized_title(self) -> None:
         requests = []
 
@@ -422,16 +507,26 @@ class SourceAndTrendTests(unittest.TestCase):
         ):
             with self.subTest(values=values):
                 page = FakeEchoTikPage([], {}, trend_values=values)
-                with self.assertRaisesRegex(ValueError, "EchoTik 七天日销售额数据为空"):
+                try:
                     read_7d_gmv_trend(page)
+                except Exception as error:
+                    self.assertIs(type(error), TrendDataEmpty)
+                    self.assertEqual(str(error), "EchoTik 七天日销售额数据为空")
+                else:
+                    self.fail("invalid seven-day trend was accepted")
 
-    def test_read_7d_gmv_trend_reports_a_missing_chart_as_an_empty_result(self) -> None:
+    def test_read_7d_gmv_trend_reports_a_missing_chart_as_an_operational_failure(self) -> None:
         page = FakeEchoTikPage([], {}, missing_chart=True)
 
-        with self.assertRaisesRegex(ValueError, "EchoTik 七天日销售额数据为空"):
+        try:
             read_7d_gmv_trend(page)
+        except Exception as error:
+            self.assertIs(type(error), RuntimeError)
+            self.assertEqual(str(error), "EchoTik 趋势图未能加载")
+        else:
+            self.fail("missing trend DOM was not reported")
 
-    def test_read_7d_gmv_trend_converts_control_selection_failures_to_an_empty_result(self) -> None:
+    def test_read_7d_gmv_trend_keeps_control_failures_operational(self) -> None:
         for control_name in ("7 天", "销售额"):
             with self.subTest(control_name=control_name):
                 page = FakeEchoTikPage([], {}, failing_control=control_name)
@@ -439,10 +534,10 @@ class SourceAndTrendTests(unittest.TestCase):
                 try:
                     read_7d_gmv_trend(page)
                 except Exception as error:
-                    self.assertIs(type(error), ValueError)
-                    self.assertEqual(str(error), "EchoTik 七天日销售额数据为空")
+                    self.assertIs(type(error), RuntimeError)
+                    self.assertEqual(str(error), "EchoTik 趋势控件操作失败")
                 else:
-                    self.fail("control selection failure was not reported")
+                    self.fail("trend control failure was not reported")
 
     def test_selects_only_twenty_echotik_details_by_7d_gmv(self) -> None:
         records = [
@@ -467,6 +562,23 @@ class SourceAndTrendTests(unittest.TestCase):
 
         self.assertEqual(20, len(select_top_detail_rows(records, limit=100)))
 
+    def test_top_twenty_is_fixed_before_missing_detail_urls_are_examined(self) -> None:
+        """Filtering missing URLs first would incorrectly substitute the twenty-first item."""
+        records = [
+            {
+                "source": "echotik",
+                "gmv_7d": value,
+                "detail_url": None if value == 25 else f"/product/{value}",
+            }
+            for value in range(25, 4, -1)
+        ]
+
+        selected = select_top_detail_rows(records)
+
+        self.assertEqual([row["gmv_7d"] for row in selected], list(range(25, 5, -1)))
+        self.assertIsNone(selected[0]["detail_url"])
+        self.assertNotIn(5, [row["gmv_7d"] for row in selected])
+
     def test_echotik_scrape_traverses_non_pet_path_and_opens_at_most_twenty_details(self) -> None:
         category = EchoTikCategory(("Home & Garden", "Kitchen", "Bakeware"), "123456")
         page = FakeEchoTikPage(
@@ -488,6 +600,24 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(context.created_pages, 1)
         self.assertTrue(page.closed)
 
+    def test_missing_url_in_frozen_top_twenty_is_data_empty_without_substitution(self) -> None:
+        """Opening the next-ranked URL would make collection and workbook Top identities diverge."""
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        rows = [echotik_row(value, float(value)) for value in range(25, 4, -1)]
+        rows[0]["href"] = None
+        page = FakeEchoTikPage(rows, {"Kitchen": category.category_id})
+
+        frame = scrape_echotik(
+            FakeEchoTikContext(page), self.make_config((category,))
+        )
+
+        top_missing = frame.loc[frame["gmv_7d"] == 25].iloc[0]
+        self.assertIn("diagnostic", top_missing.index)
+        self.assertEqual(top_missing["diagnostic"], "数据为空")
+        detail_navigations = [url for url in page.navigations if "/product/" in url]
+        self.assertEqual(len(detail_navigations), 19)
+        self.assertNotIn("https://echotik.live/product/5", detail_navigations)
+
     def test_echotik_scrape_requires_an_exact_selected_category_id(self) -> None:
         category = EchoTikCategory(("Home", "Kitchen"), "123456")
         page = FakeEchoTikPage([], {"Kitchen": "1234567"})
@@ -508,6 +638,37 @@ class SourceAndTrendTests(unittest.TestCase):
 
         self.assertEqual(1, len([url for url in page.navigations if "/product/" in url]))
         self.assertTrue(page.closed)
+
+    def test_echotik_only_converts_the_dedicated_empty_trend_exception(self) -> None:
+        """Catching every ValueError would disguise selector and parser defects as empty data."""
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        page = FakeEchoTikPage(
+            [echotik_row(1, 10.0)],
+            {"Kitchen": category.category_id},
+        )
+
+        with patch(
+            "scripts.ecommerce_report.echotik.read_7d_gmv_trend",
+            side_effect=ValueError("unexpected parser defect"),
+        ):
+            with self.assertRaisesRegex(ValueError, "unexpected parser defect"):
+                scrape_echotik(
+                    FakeEchoTikContext(page), self.make_config((category,))
+                )
+
+    def test_echotik_listing_challenge_stops_before_category_actions(self) -> None:
+        """Treating a challenged listing as an empty category would hide user action."""
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        page = FakeEchoTikPage(
+            [],
+            {"Kitchen": category.category_id},
+            verification_on_listing=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "EchoTik 出现人工验证"):
+            scrape_echotik(FakeEchoTikContext(page), self.make_config((category,)))
+
+        self.assertEqual(page.category_actions, [])
 
 
 if __name__ == "__main__":

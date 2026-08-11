@@ -4,15 +4,25 @@ from __future__ import annotations
 _EMPTY_TREND_MESSAGE = "EchoTik 七天日销售额数据为空"
 
 
+class TrendDataEmpty(ValueError):
+    """The requested chart loaded, but did not contain one valid seven-day series."""
+
+
 def read_7d_gmv_trend(page) -> list[float]:
     """Select EchoTik's seven-day sales-amount chart and read its daily values."""
     try:
         sales = page.locator("#basic-sales")
         sales.wait_for(state="visible", timeout=15_000)
+    except Exception as error:
+        raise RuntimeError("EchoTik 趋势图未能加载") from error
+    try:
         page.get_by_role("radio", name="7 天", exact=True).first.check(timeout=15_000)
         page.wait_for_timeout(3_000)
         page.get_by_role("radio", name="销售额", exact=True).first.check(timeout=15_000)
         page.wait_for_timeout(3_000)
+    except Exception as error:
+        raise RuntimeError("EchoTik 趋势控件操作失败") from error
+    try:
         daily_bars = sales.locator("path[name='日销售额']")
         daily_bars.first.wait_for(state="visible", timeout=15_000)
         values = daily_bars.evaluate_all(
@@ -28,24 +38,25 @@ def read_7d_gmv_trend(page) -> list[float]:
                 return null;
             })"""
         )
+    except Exception as error:
+        raise RuntimeError("EchoTik 趋势数据 DOM 读取失败") from error
+    try:
         if len(values) != 7 or any(
             value is None or float(value) < 0 for value in values
         ):
-            raise ValueError(_EMPTY_TREND_MESSAGE)
+            raise ValueError
         return [round(float(value), 2) for value in values]
-    except Exception as error:
-        if str(error) == _EMPTY_TREND_MESSAGE:
-            raise
-        raise ValueError(_EMPTY_TREND_MESSAGE) from error
+    except (TypeError, ValueError) as error:
+        raise TrendDataEmpty(_EMPTY_TREND_MESSAGE) from error
 
 
 def select_top_detail_rows(records, limit: int = 20) -> list[dict]:
-    """Return no more than the top twenty EchoTik records having detail URLs."""
+    """Freeze the top twenty EchoTik identities before checking detail URLs."""
     safe_limit = min(max(int(limit), 0), 20)
     candidates = [
         record
         for record in records
-        if record.get("source") == "echotik" and record.get("detail_url")
+        if record.get("source") == "echotik"
     ]
     return sorted(
         candidates,

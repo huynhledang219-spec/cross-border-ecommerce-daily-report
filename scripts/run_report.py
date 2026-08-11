@@ -8,9 +8,11 @@ from pathlib import Path
 
 try:
     from scripts.ecommerce_report.config import RuntimeConfig
+    from scripts.ecommerce_report.daily import emit_cli_failure
     from scripts.ecommerce_report.pipeline import run_pipeline
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
     from ecommerce_report.config import RuntimeConfig
+    from ecommerce_report.daily import emit_cli_failure
     from ecommerce_report.pipeline import run_pipeline
 
 
@@ -23,12 +25,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    config = RuntimeConfig.load(args.config)
-    today = date.today()
-    output_path = args.output or (
-        config.output_dir / f"{today.year}.{today.month}.{today.day}数据报表.xlsx"
-    )
-    run_pipeline(config, output_path)
+    try:
+        config = RuntimeConfig.load(args.config)
+        today = date.today()
+        output_path = args.output or (
+            config.output_dir / f"{today.year}.{today.month}.{today.day}数据报表.xlsx"
+        )
+        run_pipeline(config, output_path)
+    except Exception as error:
+        emit_cli_failure(error)
+        return 1
     return 0
 
 

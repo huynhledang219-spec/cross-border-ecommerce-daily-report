@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 from .config import RuntimeConfig
-from .trends import read_7d_gmv_trend, select_top_detail_rows
+from .trends import TrendDataEmpty, read_7d_gmv_trend, select_top_detail_rows
 
 
 _WAIT_DURATIONS = {
@@ -131,6 +131,8 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
                 timeout=30_000,
             )
             _wait(page, "navigation")
+            if _has_human_verification(page):
+                raise RuntimeError("EchoTik 出现人工验证，已停止采集")
             try:
                 _dismiss_promotion_modal(page)
                 _set_bulk_translation(page, False)
@@ -204,6 +206,9 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
 
         for product in select_top_detail_rows(products, config.detail_limit):
             detail_url = product["detail_url"]
+            if not detail_url:
+                product["diagnostic"] = "数据为空"
+                continue
             url = (
                 detail_url
                 if str(detail_url).startswith("http")
@@ -215,7 +220,7 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
                 raise RuntimeError("EchoTik 出现人工验证，已停止继续打开商品页面")
             try:
                 product["gmv_trend_7d"] = read_7d_gmv_trend(page)
-            except ValueError:
+            except TrendDataEmpty:
                 product["diagnostic"] = "数据为空"
     finally:
         page.close()

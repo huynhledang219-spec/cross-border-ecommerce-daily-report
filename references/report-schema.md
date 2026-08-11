@@ -40,10 +40,10 @@
 Set `$reportOutput` to the actual XLSX path, then run this read-only inspection from the Skill root:
 
 ```powershell
-python -c "from pathlib import Path; from scripts.ecommerce_report.workbook import inspect_report; print(inspect_report(Path(r'$reportOutput')))"
+python -c "from pathlib import Path; from scripts.ecommerce_report.workbook import verify_report; print(verify_report(Path(r'$reportOutput')))"
 ```
 
-Report success only when all checks pass:
+`verify_report` raises a concise `ValueError` when any gate fails. Report success only when it returns an inspection and all checks pass:
 
 1. The file opens as XLSX without a repair warning, and the bundled template still exists unchanged.
 2. `headers` exactly match the 15-column contract above.

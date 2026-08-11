@@ -45,7 +45,7 @@ def run_pipeline(config: RuntimeConfig, output_path: Path) -> Path:
     """Collect configured sources and export one template-preserving report."""
 
     config.validate()
-    destination = Path(output_path)
+    destination = RuntimeConfig.ensure_outside_skill(output_path, "output path")
     session = _at_stage("启动浏览器", _playwright_session)
     context = None
     session_entered = False
@@ -89,6 +89,11 @@ def run_pipeline(config: RuntimeConfig, output_path: Path) -> Path:
 
     if primary_error is not None:
         raise primary_error.with_traceback(primary_traceback)
+
+    if echotik_records.empty:
+        raise PipelineError("EchoTik采集", RuntimeError("未采集到任何 EchoTik 商品"))
+    if amazon_records.empty:
+        raise PipelineError("Amazon采集", RuntimeError("未采集到任何 Amazon 商品"))
 
     frames = [frame for frame in (echotik_records, amazon_records) if not frame.empty]
     records = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

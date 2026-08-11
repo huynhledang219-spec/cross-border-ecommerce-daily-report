@@ -62,12 +62,12 @@ class RuntimeConfig:
 
     @classmethod
     def load(cls, path: Path) -> "RuntimeConfig":
+        config_path = cls.ensure_outside_skill(path, "configuration file")
         try:
             import yaml
         except ImportError as error:
             raise RuntimeError("RuntimeConfig.load requires PyYAML") from error
 
-        config_path = Path(path).resolve()
         with config_path.open("r", encoding="utf-8") as config_file:
             mapping = yaml.safe_load(config_file) or {}
         if not isinstance(mapping, Mapping):
@@ -112,14 +112,20 @@ class RuntimeConfig:
         path = Path(value)
         return path.resolve() if path.is_absolute() else (base / path).resolve()
 
+    @classmethod
+    def ensure_outside_skill(cls, path: Path, label: str) -> Path:
+        resolved = Path(path).resolve()
+        if resolved.is_relative_to(cls._SKILL_DIRECTORY):
+            raise ValueError(f"{label} must not be inside the Skill directory")
+        return resolved
+
     def validate(self) -> None:
         if self.detail_limit != 20:
             raise ValueError("detail_limit must be 20")
         if self.trend_days != 7:
             raise ValueError("trend_days must be 7")
         for name, path in (("output_dir", self.output_dir), ("profile_dir", self.profile_dir)):
-            if path.is_relative_to(self._SKILL_DIRECTORY):
-                raise ValueError(f"{name} must not be inside the Skill directory")
+            self.ensure_outside_skill(path, name)
         if not self.echotik_categories:
             raise ValueError("at least one EchoTik category is required")
         for category in self.echotik_categories:

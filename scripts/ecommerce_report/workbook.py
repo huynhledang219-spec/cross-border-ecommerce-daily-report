@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 import math
 import os
+import re
 import shutil
+import zipfile
 from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ from openpyxl import load_workbook
 from openpyxl.chart import LineChart, Reference
 
 from .amazon import translate_amazon_title_to_chinese
+from .config import RuntimeConfig
 
 
 REPORT_HEADERS = [
@@ -40,6 +43,20 @@ REPORT_HEADERS = [
 _HELPER_HEADERS = tuple(f"趋势日{day}" for day in range(1, 8))
 _DEFAULT_CHART_EXTENT = (3_513_455, 1_031_240)
 _SOURCE_PRIORITY = {"你的库存": 0, "echotik": 1, "Amazon": 2}
+_SENSITIVE_REPORT_CONTENT = re.compile(
+    r"(?ix)("
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    r"(?<!\d)1[3-9]\d{9}(?!\d)|"
+    r"(?:password|passwd|token|cookie|secret|api[-_ ]?key|authorization)\s*[:=]|"
+    r"\bbearer\s+\S+|"
+    r"https?://[^/\s@]+@|"
+    r"[?&](?:token|session|cookie|secret|api[-_]?key|auth)=[^&\s<]+|"
+    r"(?<![a-z])[a-z]:[\\/](?:users|documents and settings)[\\/]|"
+    r"/(?:home|users|root)/|"
+    r"browser[-_ ]?profile|"
+    r"模板行|模板续行"
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,15 @@ def _excel_value(value: Any) -> Any:
     return value.item() if hasattr(value, "item") else value
 
 
+def _set_literal(cell, value: Any) -> None:
+    """Assign collected text without allowing openpyxl to infer a formula."""
+
+    literal = _excel_value(value)
+    cell.value = literal
+    if isinstance(literal, str):
+        cell.data_type = "s"
+
+
 def _number(value: Any, default: float = -math.inf) -> float:
     numeric = pd.to_numeric(value, errors="coerce")
     return default if pd.isna(numeric) else float(numeric)
@@ -87,6 +113,28 @@ def _complete_trend(value: Any) -> list[float] | None:
     if any(not math.isfinite(item) or item < 0 for item in values):
         return None
     return values
+
+
+def _formula_inventory(workbook) -> frozenset[tuple[str, str, str]]:
+    return frozenset(
+        (worksheet.title, cell.coordinate, str(cell.value))
+        for worksheet in workbook.worksheets
+        for row in worksheet.iter_rows()
+        for cell in row
+        if cell.data_type == "f"
+    )
+
+
+def _sensitive_archive_parts(path: Path) -> tuple[str, ...]:
+    flagged: list[str] = []
+    with zipfile.ZipFile(path) as archive:
+        for member in archive.namelist():
+            if not member.lower().endswith((".xml", ".rels")):
+                continue
+            text = archive.read(member).decode("utf-8", errors="ignore")
+            if _SENSITIVE_REPORT_CONTENT.search(text):
+                flagged.append(member)
+    return tuple(flagged)
 
 
 def _prepare_records(records: pd.DataFrame) -> list[dict[str, Any]]:
@@ -170,6 +218,11 @@ def write_report(
         raise FileNotFoundError(f"报表格式模板不存在: {template_path}")
     if output_path.resolve() == template_path.resolve():
         raise ValueError("输出路径不能与模板路径相同")
+    template_workbook = load_workbook(template_path, data_only=False)
+    try:
+        template_formulas = _formula_inventory(template_workbook)
+    finally:
+        template_workbook.close()
     prepared = _prepare_records(records)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(
@@ -215,9 +268,7 @@ def write_report(
             for output_row, record in enumerate(prepared, start=2):
                 values = _report_row(record)
                 for column, header in enumerate(REPORT_HEADERS, start=1):
-                    worksheet.cell(output_row, column).value = _excel_value(
-                        values.get(header)
-                    )
+                    _set_literal(worksheet.cell(output_row, column), values.get(header))
 
             detail_column = REPORT_HEADERS.index("EchoTik详情链接") + 1
             diagnostic_column = REPORT_HEADERS.index("诊断") + 1
@@ -278,8 +329,14 @@ def write_report(
         finally:
             workbook.close()
 
-        verification_workbook = load_workbook(staged_path, read_only=False)
-        verification_workbook.close()
+        verification_workbook = load_workbook(staged_path, read_only=False, data_only=False)
+        try:
+            unexpected_formulas = _formula_inventory(verification_workbook) - template_formulas
+            if unexpected_formulas:
+                raise ValueError("报表包含模板之外的公式")
+        finally:
+            verification_workbook.close()
+        verify_report(staged_path)
         os.replace(staged_path, output_path)
     finally:
         staged_path.unlink(missing_ok=True)
@@ -335,4 +392,96 @@ def inspect_report(path: Path) -> ReportInspection:
         workbook.close()
 
 
-__all__ = ["REPORT_HEADERS", "ReportInspection", "inspect_report", "write_report"]
+def verify_report(path: Path) -> ReportInspection:
+    """Fail closed when a report does not satisfy the public workbook contract."""
+
+    verified_path = RuntimeConfig.ensure_outside_skill(path, "report output")
+    inspection = inspect_report(verified_path)
+    if _sensitive_archive_parts(verified_path):
+        raise ValueError("报表包含敏感账户或本地运行内容")
+    if inspection.headers != tuple(REPORT_HEADERS):
+        raise ValueError("报表表头不符合公开格式")
+    required_hidden = ("EchoTik详情链接",) + _HELPER_HEADERS
+    if inspection.hidden_columns != required_hidden:
+        raise ValueError("报表隐藏列不符合公开格式")
+    if inspection.formula_errors:
+        raise ValueError("报表包含公式或公式错误")
+    if any(source not in _SOURCE_PRIORITY for source in inspection.source_order) or list(
+        inspection.source_order
+    ) != sorted(
+        inspection.source_order,
+        key=lambda source: _SOURCE_PRIORITY[source],
+    ):
+        raise ValueError("报表来源顺序无效")
+    workbook = load_workbook(verified_path, data_only=False)
+    try:
+        worksheet = workbook.active
+        top_rows = [
+            row
+            for row in range(2, worksheet.max_row + 1)
+            if worksheet.cell(row, 2).value not in (None, "")
+        ]
+        top_labels = [worksheet.cell(row, 2).value for row in top_rows]
+        expected_labels = [f"Top {position}" for position in range(1, len(top_rows) + 1)]
+        top_gmvs = [_number(worksheet.cell(row, 10).value) for row in top_rows]
+        if (
+            len(top_rows) > 20
+            or top_labels != expected_labels
+            or any(worksheet.cell(row, 3).value != "echotik" for row in top_rows)
+            or any(value == -math.inf for value in top_gmvs)
+            or top_gmvs != sorted(top_gmvs, reverse=True)
+        ):
+            raise ValueError("EchoTik Top 20 标签或7天GMV顺序无效")
+
+        chart_rows: list[int] = []
+        for chart in worksheet._charts:
+            chart_row = chart.anchor._from.row + 1
+            chart_rows.append(chart_row)
+            expected_range = f"${worksheet.cell(1, 16).column_letter}${chart_row}:${worksheet.cell(1, 22).column_letter}${chart_row}"
+            series_range = (
+                chart.series[0].val.numRef.f if len(chart.series) == 1 else ""
+            )
+            trend = _complete_trend(
+                [worksheet.cell(chart_row, column).value for column in range(16, 23)]
+            )
+            if (
+                chart_row not in top_rows
+                or chart.anchor._from.col != 14
+                or expected_range not in str(series_range)
+                or trend is None
+                or chart.visible_cells_only is not False
+            ):
+                raise ValueError("Top 20 趋势图与数据行不一致")
+        if len(chart_rows) > 20 or len(chart_rows) != len(set(chart_rows)):
+            raise ValueError("Top 20 趋势图数量或对应行无效")
+        if inspection.chart_extents and len(set(inspection.chart_extents)) != 1:
+            raise ValueError("Top 20 趋势图尺寸不一致")
+        for row in top_rows:
+            diagnostic = worksheet.cell(row, 15).value
+            has_chart = row in chart_rows
+            if has_chart == (diagnostic == "数据为空"):
+                raise ValueError("Top 20 行必须具有趋势图或数据为空诊断")
+        for row in range(2, worksheet.max_row + 1):
+            if worksheet.cell(row, 3).value != "Amazon":
+                continue
+            original_title = str(worksheet.cell(row, 4).value or "").strip()
+            chinese_title = str(worksheet.cell(row, 5).value or "").strip()
+            if (
+                not original_title
+                or not chinese_title
+                or original_title.endswith(("...", "…"))
+                or chinese_title.endswith(("...", "…"))
+            ):
+                raise ValueError("Amazon 中文全称或英文全称缺失、截断")
+    finally:
+        workbook.close()
+    return inspection
+
+
+__all__ = [
+    "REPORT_HEADERS",
+    "ReportInspection",
+    "inspect_report",
+    "verify_report",
+    "write_report",
+]
