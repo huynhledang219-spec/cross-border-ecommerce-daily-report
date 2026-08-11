@@ -8,5 +8,5 @@ pages_per_category: 10
 
 # Sign in manually in the isolated browser profile the first time Chrome opens.
 categories:
-  宠物清洁美容: "816392"
-  宠物服饰: "813960"
+  猫狗清洁美容: "816392"
+  猫狗服饰: "813960"

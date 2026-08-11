@@ -13,12 +13,23 @@ class RuntimeConfig:
     detail_limit: int = 20
     trend_days: int = 7
     pages_per_category: int = 10
-    categories: tuple[str, ...] = ("宠物清洁美容", "宠物服饰")
+    categories: tuple[str, ...] = ("猫狗清洁美容", "猫狗服饰")
 
     SUPPORTED_CATEGORIES: ClassVar[dict[str, str]] = {
-        "宠物清洁美容": "816392",
-        "宠物服饰": "813960",
+        "猫狗清洁美容": "816392",
+        "猫狗服饰": "813960",
     }
+    _ALLOWED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "output_dir",
+            "profile_dir",
+            "template_path",
+            "detail_limit",
+            "trend_days",
+            "pages_per_category",
+            "categories",
+        }
+    )
     _SKILL_DIRECTORY: ClassVar[Path] = Path(__file__).resolve().parents[2]
 
     @classmethod
@@ -33,13 +44,15 @@ class RuntimeConfig:
             mapping = yaml.safe_load(config_file) or {}
         if not isinstance(mapping, Mapping):
             raise ValueError("configuration must be a mapping")
-        return cls.from_mapping(config_path.parent, mapping)
+        config = cls.from_mapping(config_path.parent, mapping)
+        config.validate()
+        return config
 
     @classmethod
     def from_mapping(cls, base: Path, mapping: Mapping[str, Any]) -> "RuntimeConfig":
-        for private_field in ("email", "password"):
-            if private_field in mapping:
-                raise ValueError(f"{private_field} is not accepted in public configuration")
+        for field in mapping:
+            if field not in cls._ALLOWED_FIELDS:
+                raise ValueError(f"unknown configuration field: {field}")
 
         config_base = Path(base).resolve()
         raw_categories = mapping.get("categories", tuple(cls.SUPPORTED_CATEGORIES))
