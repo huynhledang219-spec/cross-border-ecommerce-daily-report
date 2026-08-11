@@ -1,24 +1,38 @@
 from __future__ import annotations
 
-import html
+import posixpath
 import unittest
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from collections import Counter
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
+import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from scripts.ecommerce_report.workbook import REPORT_HEADERS
+from scripts.ecommerce_report.workbook import REPORT_HEADERS, write_report
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 ASSET_PATH = REPOSITORY_ROOT / "assets" / "report-template.xlsx"
-SOURCE_PATH = (
-    REPOSITORY_ROOT.parent
-    / "跨境电商自动化"
-    / "自动化每日数据报表"
-    / "2026.8.11数据报表.xlsx"
+APPROVED_HEADERS = (
+    "排名",
+    "近7天重点选品",
+    "来源",
+    "品名关键词",
+    "中文名称",
+    "价格(USD)",
+    "商品评分",
+    "评论数",
+    "GMV",
+    "7天GMV",
+    "7天销量",
+    "关联视频",
+    "关联达人",
+    "EchoTik详情链接",
+    "诊断",
 )
 EXPECTED_WIDTHS = (
     6.0,
@@ -38,185 +52,241 @@ EXPECTED_WIDTHS = (
     52.9333333333333,
 )
 EXPECTED_CHART_EXTENT = (3_513_455, 1_031_240)
+EXPECTED_PARTS = frozenset(
+    {
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "xl/_rels/workbook.xml.rels",
+        "xl/charts/chart1.xml",
+        "xl/drawings/_rels/drawing1.xml.rels",
+        "xl/drawings/drawing1.xml",
+        "xl/styles.xml",
+        "xl/theme/theme1.xml",
+        "xl/workbook.xml",
+        "xl/worksheets/_rels/sheet1.xml.rels",
+        "xl/worksheets/sheet1.xml",
+    }
+)
+EXPECTED_DEFAULT_CONTENT_TYPES = frozenset(
+    {
+        ("rels", "application/vnd.openxmlformats-package.relationships+xml"),
+        ("xml", "application/xml"),
+    }
+)
+EXPECTED_OVERRIDE_CONTENT_TYPES = {
+    "/xl/styles.xml": "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
+    "/xl/theme/theme1.xml": "application/vnd.openxmlformats-officedocument.theme+xml",
+    "/xl/worksheets/sheet1.xml": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
+    ),
+    "/xl/drawings/drawing1.xml": "application/vnd.openxmlformats-officedocument.drawing+xml",
+    "/xl/charts/chart1.xml": "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+    "/xl/workbook.xml": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    ),
+}
 
 
 def _assert_asset_exists(test: unittest.TestCase) -> None:
     test.assertTrue(ASSET_PATH.is_file(), "public workbook asset is absent")
 
 
-def _style_fingerprint(cell) -> tuple[object, ...]:
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _relationship_target(rels_part: str, target: str) -> str:
+    if rels_part == "_rels/.rels":
+        base = PurePosixPath()
+    else:
+        rels_path = PurePosixPath(rels_part)
+        source_name = rels_path.name.removesuffix(".rels")
+        source_part = rels_path.parent.parent / source_name
+        base = source_part.parent
+    if target.startswith("/"):
+        candidate = target.lstrip("/")
+    else:
+        candidate = str(base / target)
+    return posixpath.normpath(candidate)
+
+
+def _header_style_is_approved(cell) -> bool:
     font_color = cell.font.color
-    fill_color = cell.fill.fgColor
-    return (
-        cell.font.name,
-        cell.font.sz,
-        cell.font.bold,
-        cell.font.italic,
-        font_color.type if font_color else None,
-        font_color.rgb if font_color and font_color.type == "rgb" else None,
-        font_color.indexed if font_color and font_color.type == "indexed" else None,
-        font_color.theme if font_color and font_color.type == "theme" else None,
-        cell.fill.fill_type,
-        fill_color.type,
-        fill_color.rgb if fill_color.type == "rgb" else None,
-        fill_color.indexed if fill_color.type == "indexed" else None,
-        fill_color.theme if fill_color.type == "theme" else None,
-        cell.border.left.style,
-        cell.border.right.style,
-        cell.border.top.style,
-        cell.border.bottom.style,
-        cell.alignment.horizontal,
-        cell.alignment.vertical,
-        cell.alignment.wrap_text,
-        cell.number_format,
-        cell.protection.locked,
-        cell.protection.hidden,
+    return all(
+        (
+            cell.style_id == 1,
+            cell.font.name == "微软雅黑",
+            cell.font.sz == 12.0,
+            cell.font.bold is True,
+            cell.font.italic is False,
+            font_color is not None,
+            font_color.type == "rgb" if font_color else False,
+            font_color.rgb == "FF000000" if font_color else False,
+            cell.fill.fill_type == "solid",
+            cell.fill.fgColor.type == "rgb",
+            cell.fill.fgColor.rgb == "FFFFD700",
+            cell.border.left.style == "thin",
+            cell.border.right.style == "thin",
+            cell.border.top.style == "thin",
+            cell.border.bottom.style == "thin",
+            cell.alignment.horizontal == "center",
+            cell.alignment.vertical == "center",
+            cell.alignment.wrap_text is True,
+            cell.number_format == "General",
+            cell.protection.locked is True,
+            cell.protection.hidden is False,
+        )
     )
 
 
-def _source_business_samples() -> tuple[str, ...]:
-    """Return opaque source samples used only by non-disclosure assertions."""
-    workbook = load_workbook(SOURCE_PATH, read_only=True, data_only=False, keep_links=False)
-    try:
-        worksheet = workbook.active
-        samples: list[str] = []
-        for row in worksheet.iter_rows(min_row=2, max_col=15, values_only=True):
-            for column in (3, 4, 13, 14):
-                value = row[column]
-                if isinstance(value, str) and len(value.strip()) >= 8:
-                    samples.append(value.strip())
-                    if len(samples) == 24:
-                        return tuple(samples)
-        return tuple(samples)
-    finally:
-        workbook.close()
-
-
 class PublicWorkbookAssetTests(unittest.TestCase):
-    def test_contains_only_the_approved_header_row(self) -> None:
+    def test_contains_exactly_the_approved_visible_text(self) -> None:
         _assert_asset_exists(self)
+        self.assertTrue(
+            tuple(REPORT_HEADERS) == APPROVED_HEADERS,
+            "report writer headers differ from the public asset contract",
+        )
         workbook = load_workbook(ASSET_PATH, read_only=False, data_only=False, keep_links=False)
         try:
             self.assertEqual(len(workbook.worksheets), 1)
             worksheet = workbook.active
             self.assertEqual(worksheet.sheet_state, "visible")
+            self.assertTrue(worksheet.title == "Report", "worksheet title is not allowlisted")
             self.assertEqual(worksheet.max_row, 1)
             self.assertEqual(worksheet.max_column, 15)
-            self.assertEqual(
-                [worksheet.cell(1, column).value for column in range(1, 16)],
-                REPORT_HEADERS,
+            visible_values = tuple(
+                cell.value
+                for row in worksheet.iter_rows()
+                for cell in row
+                if cell.value is not None
             )
             self.assertTrue(
-                all(
-                    cell.value in REPORT_HEADERS
-                    for row in worksheet.iter_rows()
-                    for cell in row
-                    if cell.value is not None
-                )
+                visible_values == APPROVED_HEADERS,
+                "worksheet visible text differs from the approved 15-header allowlist",
             )
         finally:
             workbook.close()
 
-    def test_retains_only_allowlisted_layout_style_and_chart_extent(self) -> None:
-        _assert_asset_exists(self)
-        self.assertTrue(SOURCE_PATH.is_file(), "private source fixture is unavailable")
-        source = load_workbook(SOURCE_PATH, read_only=False, data_only=False, keep_links=False)
-        asset = load_workbook(ASSET_PATH, read_only=False, data_only=False, keep_links=False)
-        try:
-            source_sheet = source.active
-            asset_sheet = asset.active
-            self.assertEqual(
-                tuple(
-                    asset_sheet.column_dimensions[get_column_letter(column)].width
-                    for column in range(1, 16)
-                ),
-                EXPECTED_WIDTHS,
-            )
-            self.assertEqual(asset_sheet.row_dimensions[1].height, 32.0)
-            self.assertEqual(
-                [
-                    (
-                        asset_sheet.cell(1, column).alignment.horizontal,
-                        asset_sheet.cell(1, column).alignment.vertical,
-                        asset_sheet.cell(1, column).alignment.wrap_text,
-                    )
-                    for column in range(1, 16)
-                ],
-                [("center", "center", True)] * 15,
-            )
-            self.assertEqual(
-                [_style_fingerprint(asset_sheet.cell(1, column)) for column in range(1, 16)],
-                [_style_fingerprint(source_sheet.cell(1, column)) for column in range(1, 16)],
-            )
-            self.assertEqual(len(asset_sheet._charts), 1)
-            chart = asset_sheet._charts[0]
-            self.assertEqual(len(chart.series), 0)
-            self.assertEqual((chart.anchor.ext.cx, chart.anchor.ext.cy), EXPECTED_CHART_EXTENT)
-        finally:
-            source.close()
-            asset.close()
-
-    def test_has_no_workbook_level_or_cell_level_active_content(self) -> None:
+    def test_retains_static_layout_style_and_empty_chart_contract(self) -> None:
         _assert_asset_exists(self)
         workbook = load_workbook(ASSET_PATH, read_only=False, data_only=False, keep_links=False)
         try:
-            self.assertEqual(list(workbook.defined_names.values()), [])
-            self.assertEqual(getattr(workbook, "_external_links", []), [])
-            for worksheet in workbook.worksheets:
-                for row in worksheet.iter_rows():
-                    for cell in row:
-                        self.assertNotEqual(cell.data_type, "f")
-                        self.assertIsNone(cell.hyperlink)
-                        self.assertIsNone(cell.comment)
+            worksheet = workbook.active
+            widths = tuple(
+                worksheet.column_dimensions[get_column_letter(column)].width
+                for column in range(1, 16)
+            )
+            self.assertTrue(widths == EXPECTED_WIDTHS, "column widths differ from the public contract")
+            self.assertEqual(worksheet.row_dimensions[1].height, 32.0)
+            self.assertTrue(
+                all(_header_style_is_approved(worksheet.cell(1, column)) for column in range(1, 16)),
+                "header style differs from the public contract",
+            )
+            self.assertEqual(len(worksheet._charts), 1)
+            chart = worksheet._charts[0]
+            self.assertEqual(len(chart.series), 0)
+            self.assertEqual((chart.anchor.ext.cx, chart.anchor.ext.cy), EXPECTED_CHART_EXTENT)
         finally:
             workbook.close()
 
-    def test_zip_payload_has_no_private_or_external_parts(self) -> None:
+    def test_has_no_workbook_or_cell_active_content(self) -> None:
         _assert_asset_exists(self)
-        forbidden_fragments = (
-            "externallinks/",
-            "media/",
-            "comments",
-            "vml",
-            "customxml/",
-            "docprops/custom.xml",
-            "connections",
-            "querytables/",
-            "pivotcache/",
-            "embeddings/",
-            "activex/",
-            "macros/",
-        )
+        workbook = load_workbook(ASSET_PATH, read_only=False, data_only=False, keep_links=False)
+        try:
+            self.assertTrue(
+                not list(workbook.defined_names.values()), "workbook contains defined names"
+            )
+            self.assertTrue(
+                not bool(getattr(workbook, "_external_links", [])),
+                "workbook has external links",
+            )
+            for worksheet in workbook.worksheets:
+                for row in worksheet.iter_rows():
+                    for cell in row:
+                        self.assertTrue(cell.data_type != "f", "worksheet contains a formula")
+                        self.assertTrue(cell.hyperlink is None, "worksheet contains a hyperlink")
+                        self.assertTrue(cell.comment is None, "worksheet contains a comment")
+        finally:
+            workbook.close()
+
+    def test_zip_manifest_content_types_relationships_and_text_are_allowlisted(self) -> None:
+        _assert_asset_exists(self)
         with ZipFile(ASSET_PATH) as archive:
-            names = tuple(name.lower() for name in archive.namelist())
-            self.assertTrue(all(not name.endswith("/") for name in names))
-            self.assertFalse(
-                any(fragment in name for name in names for fragment in forbidden_fragments)
+            names = frozenset(archive.namelist())
+            self.assertTrue(names == EXPECTED_PARTS, "ZIP manifest differs from the exact allowlist")
+            self.assertTrue(
+                all(not name.startswith("docProps/") for name in names),
+                "ZIP contains document properties",
             )
 
-            xml_parts: list[str] = []
-            for name in archive.namelist():
-                if not name.lower().endswith((".xml", ".rels")):
-                    continue
-                raw = archive.read(name)
-                text = raw.decode("utf-8")
-                xml_parts.append(text)
-                root = ET.fromstring(raw)
-                if name.lower().endswith(".rels"):
-                    for relationship in root:
-                        self.assertNotEqual(relationship.attrib.get("TargetMode"), "External")
-                        target = relationship.attrib.get("Target", "").lower()
-                        self.assertFalse(target.startswith(("http://", "https://", "file:")))
+            content_types = ET.fromstring(archive.read("[Content_Types].xml"))
+            defaults = frozenset(
+                (element.attrib.get("Extension"), element.attrib.get("ContentType"))
+                for element in content_types
+                if _local_name(element.tag) == "Default"
+            )
+            overrides = {
+                element.attrib.get("PartName"): element.attrib.get("ContentType")
+                for element in content_types
+                if _local_name(element.tag) == "Override"
+            }
+            self.assertTrue(
+                defaults == EXPECTED_DEFAULT_CONTENT_TYPES,
+                "default Content Types differ from the exact allowlist",
+            )
+            self.assertTrue(
+                overrides == EXPECTED_OVERRIDE_CONTENT_TYPES,
+                "override Content Types differ from the exact allowlist",
+            )
 
-            joined_xml = "\n".join(xml_parts)
-            self.assertNotIn("<f>", joined_xml)
-            self.assertNotIn(":f>", joined_xml)
-            self.assertNotIn("hyperlink", joined_xml.lower())
-            for sample in _source_business_samples():
-                self.assertNotIn(sample, joined_xml, "source business value leaked into archive")
-                self.assertNotIn(
-                    html.escape(sample), joined_xml, "escaped source business value leaked into archive"
-                )
+            visible_xml_text: list[str] = []
+            for name in sorted(names):
+                if not name.endswith((".xml", ".rels")):
+                    continue
+                root = ET.fromstring(archive.read(name))
+                for element in root.iter():
+                    local_name = _local_name(element.tag)
+                    self.assertTrue(local_name != "f", "package XML contains a formula reference")
+                    if local_name == "t" and element.text:
+                        visible_xml_text.append(element.text)
+                if not name.endswith(".rels"):
+                    continue
+                for relationship in root:
+                    self.assertTrue(
+                        relationship.attrib.get("TargetMode", "").lower() != "external",
+                        "package contains an external relationship",
+                    )
+                    target = relationship.attrib.get("Target", "")
+                    self.assertTrue(bool(target), "package relationship has no target")
+                    resolved_target = _relationship_target(name, target)
+                    self.assertTrue(
+                        resolved_target in names,
+                        "package relationship target is outside the exact manifest allowlist",
+                    )
+
+            self.assertTrue(
+                Counter(visible_xml_text) == Counter(APPROVED_HEADERS),
+                "package visible text differs from the approved 15-header allowlist",
+            )
+
+            for name in names - {"[Content_Types].xml"}:
+                if name.endswith(".rels"):
+                    content_type = dict(defaults).get("rels")
+                else:
+                    content_type = overrides.get(f"/{name}") or dict(defaults).get(
+                        PurePosixPath(name).suffix.lstrip(".")
+                    )
+                self.assertTrue(bool(content_type), "manifest part has no allowlisted Content Type")
+
+    def test_write_report_can_consume_the_public_asset(self) -> None:
+        _assert_asset_exists(self)
+        with TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "report.xlsx"
+            result = write_report(pd.DataFrame(), output_path, ASSET_PATH)
+            self.assertEqual(result, output_path)
+            workbook = load_workbook(output_path, read_only=False, data_only=False, keep_links=False)
+            workbook.close()
+            self.assertTrue(output_path.is_file(), "write_report did not create an output workbook")
 
 
 if __name__ == "__main__":
