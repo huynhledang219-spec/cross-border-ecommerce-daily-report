@@ -2,7 +2,7 @@
 
 ## New Windows computer
 
-Use Windows PowerShell, Python 3.10 or newer, and Google Chrome. The packaged code directly imports only the libraries in `scripts/requirements.txt`.
+Use Windows PowerShell, Python 3.12 or newer, and Google Chrome. The packaged code directly imports only the libraries in `scripts/requirements.txt`.
 
 With user authorization, run these commands from the Skill root:
 

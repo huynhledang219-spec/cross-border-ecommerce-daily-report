@@ -11,6 +11,32 @@ from scripts.ecommerce_report.browser import (
 from scripts.ecommerce_report.config import AmazonCategory, EchoTikCategory, RuntimeConfig
 
 
+class PublicSkillDocumentationTests(unittest.TestCase):
+    def test_public_skill_requires_the_verified_python_version(self) -> None:
+        """Lowering the documented minimum would claim an unverified runtime."""
+        skill_root = Path(__file__).resolve().parents[1]
+        configuration_reference = (
+            skill_root / "references" / "configuration.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Python 3.12 or newer", configuration_reference)
+
+        public_text_files = [skill_root / "SKILL.md"]
+        for directory in ("agents", "references", "scripts"):
+            public_text_files.extend(
+                path
+                for path in (skill_root / directory).rglob("*")
+                if path.is_file()
+                and path.suffix.lower() in {".md", ".ps1", ".py", ".txt", ".yaml", ".yml"}
+            )
+        forbidden_version = "Python 3." + "10"
+        offenders = [
+            str(path.relative_to(skill_root))
+            for path in public_text_files
+            if forbidden_version in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [])
+
+
 class RecordingChromium:
     def __init__(self) -> None:
         self.calls: list[tuple[Path, dict]] = []
