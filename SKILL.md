@@ -1,85 +1,52 @@
 ---
 name: cross-border-ecommerce-daily-report
-description: Generate and verify daily Amazon and EchoTik product-selection reports when a user requests a cross-border ecommerce daily report.
+description: Use when setting up, running, troubleshooting, or verifying a Windows daily Amazon and EchoTik product-selection report in XLSX format.
 ---
 
-# Cross Border Ecommerce Daily Report
+# Cross-Border Ecommerce Daily Report
 
-## Overview
+## Core principle
 
-[TODO: 1-2 sentences explaining what this skill enables]
+Produce a local, template-preserving, verified XLSX. Keep credentials, the persistent Chrome profile, local configuration, and report output outside the Skill directory.
 
-## Structuring This Skill
+## Workflow
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+1. Read [references/configuration.md](references/configuration.md) before setup, first login, scheduling, troubleshooting, or any category change.
+2. Read [references/report-schema.md](references/report-schema.md) before running, verifying, distributing, or changing workbook behavior.
+3. On a new Windows computer, prepare a local config from `scripts/config.example.yaml`; keep the included pet categories until another category is visibly verified.
+4. Install prerequisites only with user authorization. Never copy credentials or another person's Chrome profile into this Skill.
+5. Run one manual report first from the Skill root:
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
+   ```powershell
+   python ".\scripts\run_report.py" --config "$reportConfig"
+   ```
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
+6. On the first run, use the visible Chrome window for the user to sign in to EchoTik manually. If login is incomplete, let the run fail and rerun after the local persistent profile has saved the session.
+7. Stop when any login challenge, CAPTCHA, or human-verification page appears. Do not bypass, automate, or continue opening product-detail pages. Resume only after the user has completed the challenge manually and asks to retry.
+8. Generate today's report. Keep `detail_limit: 20` and `trend_days: 7`; visit no more than the Top 20 EchoTik detail pages and select the **7-day / sales amount** chart data.
+9. On failure, give only the failed stage, a concise sanitized reason, and the failure-record path when available. Do not expose tracebacks, credentials, cookies, tokens, or local profile paths.
+10. Verify the workbook against `references/report-schema.md` before reporting success. A file existing is not sufficient evidence.
+11. Register the scheduled task only after the manual run and workbook verification pass, and only when the user requests scheduling.
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
+## Change category from natural language
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
+The user only needs to name the target product category. Perform this evidence-gated workflow:
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+1. Open EchoTik in a visible browser using the user's local session. Navigate the complete category menu and record every visible label in order.
+2. Select the final category and confirm that the visible selection matches the target and that the resulting `product_categories` value is the numeric `category_id` for that exact full path.
+3. Open Amazon visibly and confirm an Amazon HTTPS category/search URL whose displayed results match the same target category.
+4. Only after both confirmations, edit the user's local `config.yaml`: replace `echotik_categories` with the confirmed full `path` and `id`, and replace `amazon_categories` with the matching name and HTTPS URL.
+5. Validate and run with that local config, then verify the workbook.
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+Never guess, infer, translate into, or reuse a category ID from memory. Never substitute an unverified Amazon URL. Time pressure, a manager request, or a previously similar category does not waive either visible confirmation. Until both sides are confirmed, leave the default pet categories and local config unchanged and report what evidence is missing.
 
-## [TODO: Replace with the first main section based on chosen structure]
+## Common mistakes
 
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
-
-## Resources (optional)
-
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
-
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
-
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
-
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
-
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+| Mistake | Required response |
+|---|---|
+| Running a schedule before first login | Complete a visible manual run and workbook verification first. |
+| Editing `scripts/config.example.yaml` | Copy it outside the Skill and edit only the local copy. |
+| Guessing a category ID or Amazon URL | Stop; visibly confirm the EchoTik path/ID and matching Amazon HTTPS page. |
+| Treating any XLSX as success | Inspect structure, limits, charts, errors, and sensitive content. |
+| Continuing through human verification | Stop all detail-page automation and wait for manual completion. |
+| Writing into `assets/report-template.xlsx` | Fail verification; always write to a separate output path. |

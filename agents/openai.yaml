@@ -1,4 +1,4 @@
 interface:
-  display_name: "¿ç¾³µçÉÌÃ¿ÈÕÊı¾İ±¨±í"
-  short_description: "Éú³É Amazon Óë EchoTik Ã¿ÈÕÑ¡Æ·±¨±í"
+  display_name: "è·¨å¢ƒç”µå•†æ¯æ—¥æ•°æ®æŠ¥è¡¨"
+  short_description: "ç”Ÿæˆ Amazon ä¸ EchoTik æ¯æ—¥é€‰å“æŠ¥è¡¨"
   default_prompt: "Use $cross-border-ecommerce-daily-report to generate and verify today's cross-border ecommerce report."
