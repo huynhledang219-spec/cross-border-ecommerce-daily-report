@@ -57,6 +57,22 @@ _SENSITIVE_REPORT_CONTENT = re.compile(
     r"模板行|模板续行"
     r")"
 )
+_SENSITIVE_REPORT_BYTES = re.compile(
+    rb"(?ix)("
+    rb"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    rb"(?<!\d)1[3-9]\d{9}(?!\d)|"
+    rb"(?:password|passwd|token|cookie|secret|api[-_ ]?key|authorization)\s*[:=]|"
+    rb"\bbearer\s+\S+|"
+    rb"https?://[^/\s@]+@|"
+    rb"[?&](?:token|session|cookie|secret|api[-_]?key|auth)=[^&\s<]+|"
+    rb"(?<![a-z])[a-z]:[\\/](?:users|documents[ ]and[ ]settings)[\\/]|"
+    rb"/(?:home|users|root)/|"
+    rb"browser[-_ ]?profile"
+    rb")"
+)
+_PRIVATE_RESIDUE_BYTES = tuple(
+    marker.encode("utf-8") for marker in ("模板行", "模板续行")
+)
 
 
 @dataclass(frozen=True)
@@ -129,10 +145,25 @@ def _sensitive_archive_parts(path: Path) -> tuple[str, ...]:
     flagged: list[str] = []
     with zipfile.ZipFile(path) as archive:
         for member in archive.namelist():
-            if not member.lower().endswith((".xml", ".rels")):
-                continue
-            text = archive.read(member).decode("utf-8", errors="ignore")
-            if _SENSITIVE_REPORT_CONTENT.search(text):
+            payload = archive.read(member)
+            raw_match = _SENSITIVE_REPORT_BYTES.search(payload) or any(
+                marker in payload for marker in _PRIVATE_RESIDUE_BYTES
+            )
+            text_match = False
+            encoding = "utf-8"
+            if payload.startswith(
+                (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")
+            ):
+                encoding = "utf-32"
+            elif payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+                encoding = "utf-16"
+            try:
+                text = payload.decode(encoding)
+            except UnicodeDecodeError:
+                text = None
+            if text is not None:
+                text_match = _SENSITIVE_REPORT_CONTENT.search(text) is not None
+            if raw_match or text_match:
                 flagged.append(member)
     return tuple(flagged)
 
@@ -336,7 +367,7 @@ def write_report(
                 raise ValueError("报表包含模板之外的公式")
         finally:
             verification_workbook.close()
-        verify_report(staged_path)
+        verify_report(staged_path, template_path)
         os.replace(staged_path, output_path)
     finally:
         staged_path.unlink(missing_ok=True)
@@ -392,10 +423,21 @@ def inspect_report(path: Path) -> ReportInspection:
         workbook.close()
 
 
-def verify_report(path: Path) -> ReportInspection:
+def verify_report(path: Path, template_path: Path | None = None) -> ReportInspection:
     """Fail closed when a report does not satisfy the public workbook contract."""
 
     verified_path = RuntimeConfig.ensure_outside_skill(path, "report output")
+    reference_template = Path(template_path) if template_path is not None else (
+        RuntimeConfig._SKILL_DIRECTORY / "assets" / "report-template.xlsx"
+    )
+    template_workbook = load_workbook(reference_template, data_only=False)
+    try:
+        if not template_workbook.active._charts:
+            raise ValueError("模板缺少参考图表")
+        template_anchor = template_workbook.active._charts[0].anchor
+        template_extent = (template_anchor.ext.cx, template_anchor.ext.cy)
+    finally:
+        template_workbook.close()
     inspection = inspect_report(verified_path)
     if _sensitive_archive_parts(verified_path):
         raise ValueError("报表包含敏感账户或本地运行内容")
@@ -406,6 +448,8 @@ def verify_report(path: Path) -> ReportInspection:
         raise ValueError("报表隐藏列不符合公开格式")
     if inspection.formula_errors:
         raise ValueError("报表包含公式或公式错误")
+    if any(extent != template_extent for extent in inspection.chart_extents):
+        raise ValueError("报表图表尺寸与模板图表尺寸不一致")
     if any(source not in _SOURCE_PRIORITY for source in inspection.source_order) or list(
         inspection.source_order
     ) != sorted(
@@ -416,6 +460,25 @@ def verify_report(path: Path) -> ReportInspection:
     workbook = load_workbook(verified_path, data_only=False)
     try:
         worksheet = workbook.active
+        populated_rows = [
+            row
+            for row in range(2, worksheet.max_row + 1)
+            if any(
+                worksheet.cell(row, column).value not in (None, "")
+                for column in range(1, len(REPORT_HEADERS) + 1)
+            )
+        ]
+        expected_filter = f"A1:O{max(populated_rows, default=1)}"
+        if str(worksheet.freeze_panes or "") != "A2" or worksheet.auto_filter.ref != expected_filter:
+            raise ValueError("报表冻结窗格或筛选范围无效")
+        source_values = [
+            str(worksheet.cell(row, 3).value)
+            for row in populated_rows
+            if worksheet.cell(row, 3).value not in (None, "")
+        ]
+        source_priorities = [_SOURCE_PRIORITY[source] for source in source_values]
+        if source_priorities != sorted(source_priorities):
+            raise ValueError("报表来源连续分组顺序无效")
         top_rows = [
             row
             for row in range(2, worksheet.max_row + 1)
@@ -469,6 +532,8 @@ def verify_report(path: Path) -> ReportInspection:
             if (
                 not original_title
                 or not chinese_title
+                or not re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", chinese_title)
+                or chinese_title.casefold() == original_title.casefold()
                 or original_title.endswith(("...", "…"))
                 or chinese_title.endswith(("...", "…"))
             ):

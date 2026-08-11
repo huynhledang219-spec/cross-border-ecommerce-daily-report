@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.chart import LineChart, Reference
 
 from scripts.ecommerce_report.config import RuntimeConfig
 from scripts.ecommerce_report import daily as daily_module
@@ -47,6 +48,16 @@ def _create_template(path: Path) -> None:
     worksheet = workbook.active
     worksheet.append(REPORT_HEADERS)
     worksheet.append([None] * len(REPORT_HEADERS))
+    for column, value in enumerate(range(1, 8), start=16):
+        worksheet.cell(2, column, value)
+    chart = LineChart()
+    chart.width = 3_513_455 / 360_000
+    chart.height = 1_031_240 / 360_000
+    chart.add_data(
+        Reference(worksheet, min_col=16, max_col=22, min_row=2, max_row=2),
+        from_rows=True,
+    )
+    worksheet.add_chart(chart, "O2")
     workbook.save(path)
     workbook.close()
 

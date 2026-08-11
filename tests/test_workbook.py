@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -236,7 +237,7 @@ class WorkbookExportTests(unittest.TestCase):
         result = self.write_fixture()
 
         try:
-            inspection = workbook_module.verify_report(result)
+            inspection = workbook_module.verify_report(result, self.template_path)
         except AttributeError:
             self.fail("verify_report is not implemented")
 
@@ -251,7 +252,24 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
 
         with self.assertRaisesRegex(ValueError, "表头"):
-            workbook_module.verify_report(result)
+            workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_wrong_freeze_pane_or_public_filter_range(self) -> None:
+        """A valid-looking table must still preserve the promised navigation layout."""
+        for mutation in ("freeze", "filter"):
+            with self.subTest(mutation=mutation):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                worksheet = workbook.active
+                if mutation == "freeze":
+                    worksheet.freeze_panes = None
+                else:
+                    worksheet.auto_filter.ref = "A1:N25"
+                workbook.save(result)
+                workbook.close()
+
+                with self.assertRaisesRegex(ValueError, "冻结窗格或筛选范围"):
+                    workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_top_labels_not_matching_descending_gmv(self) -> None:
         """Checking only chart count would accept mislabeled or unsorted Top products."""
@@ -263,7 +281,18 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
 
         with self.assertRaisesRegex(ValueError, "Top 20"):
-            workbook_module.verify_report(result)
+            workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_a_source_that_reappears_after_a_later_group(self) -> None:
+        """Unique first-seen sources cannot detect echotik→Amazon→echotik interleaving."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["C23"] = "Amazon"
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "来源连续分组"):
+            workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_a_top_row_without_chart_or_data_empty_diagnostic(self) -> None:
         """Counting charts globally would miss a chart attached to the wrong Top identity."""
@@ -275,7 +304,25 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
 
         with self.assertRaisesRegex(ValueError, "趋势图"):
-            workbook_module.verify_report(result)
+            workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_uniform_chart_sizes_that_do_not_match_template(self) -> None:
+        """Checking only mutual consistency would accept charts resized away from the template."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        for chart in workbook.active._charts:
+            chart.anchor.ext.cx = 720_000
+            chart.anchor.ext.cy = 360_000
+        workbook.save(result)
+        workbook.close()
+
+        try:
+            workbook_module.verify_report(result, self.template_path)
+        except Exception as error:
+            self.assertIs(type(error), ValueError)
+            self.assertIn("模板图表尺寸", str(error))
+        else:
+            self.fail("uniform non-template chart sizes were accepted")
 
     def test_verify_report_rejects_visible_helper_or_detail_columns(self) -> None:
         """Visible helper data would violate the published workbook layout."""
@@ -286,7 +333,7 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
 
         with self.assertRaisesRegex(ValueError, "隐藏列"):
-            workbook_module.verify_report(result)
+            workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_missing_or_visibly_truncated_amazon_translation(self) -> None:
         """A source row existing does not prove its promised complete Chinese title exists."""
@@ -299,7 +346,19 @@ class WorkbookExportTests(unittest.TestCase):
                 workbook.close()
 
                 with self.assertRaisesRegex(ValueError, "Amazon 中文全称"):
-                    workbook_module.verify_report(result)
+                    workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_a_pure_english_amazon_chinese_name(self) -> None:
+        """A copied English title is nonempty but is not the promised Chinese translation."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        worksheet = workbook.active
+        worksheet["E25"] = worksheet["D25"].value
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "Amazon 中文全称"):
+            workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_an_output_inside_the_skill(self) -> None:
         """A structurally valid workbook is still unsafe when published in the Skill tree."""
@@ -317,7 +376,31 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
 
         with self.assertRaisesRegex(ValueError, "敏感"):
-            workbook_module.verify_report(result)
+            workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_scans_text_and_raw_bytes_in_every_zip_part(self) -> None:
+        """Restricting scans to XML/RELS would miss private residue in custom or binary parts."""
+        cases = (
+            ("custom/private.txt", b"private contact: hidden@example.invalid", True),
+            (
+                "custom/private-utf16.txt",
+                "private contact: hidden@example.invalid".encode("utf-16"),
+                True,
+            ),
+            ("xl/media/private.bin", b"\x89BIN\xfftoken=private-value\x00", True),
+            ("xl/media/safe.bin", b"\x89PNG\r\n\x1a\n\x00\xff\x10\x80", False),
+        )
+        for member, payload, should_reject in cases:
+            with self.subTest(member=member):
+                result = self.write_fixture()
+                with zipfile.ZipFile(result, "a") as archive:
+                    archive.writestr(member, payload)
+
+                if should_reject:
+                    with self.assertRaisesRegex(ValueError, "敏感"):
+                        workbook_module.verify_report(result, self.template_path)
+                else:
+                    workbook_module.verify_report(result, self.template_path)
 
     def test_write_report_runs_verification_before_replacing_existing_output(self) -> None:
         """Leaving verification as an optional command would allow unsafe output publication."""
