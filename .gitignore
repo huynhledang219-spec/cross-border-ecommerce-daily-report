@@ -1,0 +1,16 @@
+config.yaml
+.env
+*.local.yaml
+output/
+reports/
+failures/
+data/
+browser-profile/
+**/browser-profile/
+*.xlsx
+!assets/report-template.xlsx
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.superpowers/
