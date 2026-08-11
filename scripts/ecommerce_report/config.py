@@ -133,5 +133,5 @@ class RuntimeConfig:
             if not category.name.strip():
                 raise ValueError("Amazon category name must not be empty")
             parsed_url = urlparse(category.url)
-            if parsed_url.scheme.lower() != "https" or not parsed_url.netloc:
+            if parsed_url.scheme.lower() != "https" or not parsed_url.hostname:
                 raise ValueError("Amazon category URL must use HTTPS")

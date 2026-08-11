@@ -255,6 +255,16 @@ class ConfigAndBrowserTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     config.validate()
 
+    def test_amazon_category_rejects_a_port_only_authority(self) -> None:
+        """Checking netloc instead of hostname would accept a URL with no host."""
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {"amazon_categories": [{"name": "Books", "url": "https://:443/books"}]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "Amazon category URL must use HTTPS"):
+            config.validate()
+
     def test_each_source_requires_at_least_one_category(self) -> None:
         """Removing source minimums would permit a report with no source coverage."""
         for field, message in (
