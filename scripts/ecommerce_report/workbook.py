@@ -292,8 +292,11 @@ def write_report(
                     cell.value = None
                     cell.hyperlink = None
 
-            style_source_row = 3 if existing_last_row >= 3 else 2
             for row in range(existing_last_row + 1, output_last_row + 1):
+                if existing_last_row >= 4:
+                    style_source_row = 3 + ((row - 3) % 2)
+                else:
+                    style_source_row = 3 if existing_last_row >= 3 else 2
                 _copy_row_style(worksheet, style_source_row, row)
 
             for output_row, record in enumerate(prepared, start=2):

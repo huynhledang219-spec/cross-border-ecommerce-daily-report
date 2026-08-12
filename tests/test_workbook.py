@@ -26,17 +26,22 @@ def create_synthetic_template(path: Path) -> None:
     worksheet.append(template_headers)
     worksheet.append(["模板行"] * len(template_headers))
     worksheet.append(["模板续行"] * len(template_headers))
+    worksheet.append(["模板交替行"] * len(template_headers))
 
     gold_fill = PatternFill(fill_type="solid", fgColor="FFD700")
     for cell in worksheet[1]:
         cell.fill = gold_fill
-    for row in (2, 3):
+    for row in (2, 3, 4):
         for column in range(1, len(template_headers) + 1):
             worksheet.cell(row, column).alignment = Alignment(horizontal="left")
+    gray_fill = PatternFill(fill_type="solid", fgColor="FFF2F2F2")
+    for cell in worksheet[4]:
+        cell.fill = gray_fill
     worksheet.column_dimensions["D"].width = 31.5
     worksheet.column_dimensions["O"].width = 24.0
     worksheet.row_dimensions[2].height = 36.0
     worksheet.row_dimensions[3].height = 29.0
+    worksheet.row_dimensions[4].height = 29.0
 
     for column, value in enumerate(range(1, 8), start=16):
         worksheet.cell(2, column, value)
@@ -200,6 +205,15 @@ class WorkbookExportTests(unittest.TestCase):
             [chart.series[0].val.numRef.f for chart in worksheet._charts],
             [f"'每日选品'!$P${row}:$V${row}" for row in range(4, 23)],
         )
+        worksheet.parent.close()
+
+    def test_repeats_the_two_actual_body_row_styles_in_order(self) -> None:
+        result = self.write_fixture()
+        worksheet = load_workbook(result, data_only=False).active
+
+        self.assertNotEqual(worksheet["A3"].fill.fgColor.rgb, worksheet["A4"].fill.fgColor.rgb)
+        self.assertEqual(worksheet["A5"].fill.fgColor.rgb, worksheet["A3"].fill.fgColor.rgb)
+        self.assertEqual(worksheet["A6"].fill.fgColor.rgb, worksheet["A4"].fill.fgColor.rgb)
         worksheet.parent.close()
 
     def test_missing_trend_writes_data_empty_without_a_chart(self) -> None:

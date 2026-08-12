@@ -35,16 +35,19 @@ APPROVED_HEADERS = (
     "诊断",
 )
 EXPECTED_WIDTHS = (
+    # The WPS source stores F:G and H:J as grouped OOXML column spans.
+    # These are their effective rendered widths, not openpyxl's default for
+    # a non-leading member of a grouped span.
     6.0,
     10.0,
     28.0,
     24.0,
     32.8571428571429,
     10.0,
-    13.0,
+    10.0,
     14.0,
-    13.0,
-    13.0,
+    14.0,
+    14.0,
     10.0,
     13.0,
     13.0,
@@ -56,6 +59,8 @@ EXPECTED_PARTS = frozenset(
     {
         "[Content_Types].xml",
         "_rels/.rels",
+        "docProps/app.xml",
+        "docProps/core.xml",
         "xl/_rels/workbook.xml.rels",
         "xl/charts/chart1.xml",
         "xl/drawings/_rels/drawing1.xml.rels",
@@ -74,6 +79,10 @@ EXPECTED_DEFAULT_CONTENT_TYPES = frozenset(
     }
 )
 EXPECTED_OVERRIDE_CONTENT_TYPES = {
+    "/docProps/app.xml": (
+        "application/vnd.openxmlformats-officedocument.extended-properties+xml"
+    ),
+    "/docProps/core.xml": "application/vnd.openxmlformats-package.core-properties+xml",
     "/xl/styles.xml": "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml",
     "/xl/theme/theme1.xml": "application/vnd.openxmlformats-officedocument.theme+xml",
     "/xl/worksheets/sheet1.xml": (
@@ -99,7 +108,7 @@ def _manifest_is_allowlisted(member_names: list[str]) -> bool:
     unique_names = frozenset(member_names)
     return all(
         (
-            len(member_names) == 11,
+            len(member_names) == 13,
             len(member_names) == len(unique_names),
             unique_names == EXPECTED_PARTS,
         )
@@ -125,7 +134,7 @@ def _header_style_is_approved(cell) -> bool:
     font_color = cell.font.color
     return all(
         (
-            cell.style_id == 1,
+            cell.style_id == 2,
             cell.font.name == "微软雅黑",
             cell.font.sz == 12.0,
             cell.font.bold is True,
@@ -151,6 +160,52 @@ def _header_style_is_approved(cell) -> bool:
 
 
 class PublicWorkbookAssetTests(unittest.TestCase):
+    def test_preserves_the_actual_2026_8_11_layout_without_business_values(self) -> None:
+        """The public asset must be a sanitized layout clone, not a header-only shell."""
+
+        _assert_asset_exists(self)
+        workbook = load_workbook(ASSET_PATH, read_only=False, data_only=False, keep_links=False)
+        try:
+            worksheet = workbook.active
+            self.assertEqual(worksheet.title, "Sheet1")
+            self.assertGreaterEqual(worksheet.max_row, 4)
+            self.assertGreaterEqual(worksheet.max_column, 22)
+            self.assertEqual(worksheet.freeze_panes, "A2")
+            self.assertEqual(worksheet.auto_filter.ref, "A1:O4")
+            self.assertEqual(
+                tuple(
+                    worksheet.column_dimensions[get_column_letter(column)].width
+                    for column in range(1, 16)
+                ),
+                EXPECTED_WIDTHS,
+            )
+            self.assertEqual(worksheet.row_dimensions[1].height, 32.0)
+            self.assertEqual(worksheet.row_dimensions[2].height, 78.0)
+            self.assertEqual(worksheet.row_dimensions[3].height, 78.0)
+            self.assertEqual(worksheet.row_dimensions[4].height, 78.0)
+            self.assertTrue(worksheet.column_dimensions["N"].hidden)
+            self.assertTrue(all(worksheet.column_dimensions[column].hidden for column in "PQRSTUV"))
+            self.assertEqual(worksheet["A2"].fill.fgColor.rgb, "FFE8F5E9")
+            self.assertEqual(worksheet["C2"].alignment.horizontal, "left")
+            self.assertEqual(worksheet["D3"].alignment.horizontal, "left")
+            self.assertEqual(worksheet["E3"].alignment.horizontal, "left")
+            self.assertNotEqual(worksheet["A3"].fill.fgColor.rgb, worksheet["A4"].fill.fgColor.rgb)
+            self.assertEqual(len(worksheet._charts), 1)
+            chart = worksheet._charts[0]
+            self.assertEqual(len(chart.series), 0)
+            self.assertEqual((chart.anchor._from.col, chart.anchor._from.row), (14, 2))
+            self.assertEqual((chart.anchor.ext.cx, chart.anchor.ext.cy), EXPECTED_CHART_EXTENT)
+
+            visible_values = tuple(
+                cell.value
+                for row in worksheet.iter_rows()
+                for cell in row
+                if cell.value is not None
+            )
+            self.assertEqual(visible_values, APPROVED_HEADERS)
+        finally:
+            workbook.close()
+
     def test_manifest_check_rejects_a_duplicate_allowlisted_part(self) -> None:
         member_names = list(EXPECTED_PARTS)
         member_names.append("xl/workbook.xml")
@@ -170,9 +225,9 @@ class PublicWorkbookAssetTests(unittest.TestCase):
             self.assertEqual(len(workbook.worksheets), 1)
             worksheet = workbook.active
             self.assertEqual(worksheet.sheet_state, "visible")
-            self.assertTrue(worksheet.title == "Report", "worksheet title is not allowlisted")
-            self.assertEqual(worksheet.max_row, 1)
-            self.assertEqual(worksheet.max_column, 15)
+            self.assertTrue(worksheet.title == "Sheet1", "worksheet title is not allowlisted")
+            self.assertEqual(worksheet.max_row, 4)
+            self.assertEqual(worksheet.max_column, 22)
             visible_values = tuple(
                 cell.value
                 for row in worksheet.iter_rows()
@@ -197,6 +252,9 @@ class PublicWorkbookAssetTests(unittest.TestCase):
             )
             self.assertTrue(widths == EXPECTED_WIDTHS, "column widths differ from the public contract")
             self.assertEqual(worksheet.row_dimensions[1].height, 32.0)
+            self.assertEqual(worksheet.row_dimensions[2].height, 78.0)
+            self.assertEqual(worksheet.row_dimensions[3].height, 78.0)
+            self.assertEqual(worksheet.row_dimensions[4].height, 78.0)
             self.assertTrue(
                 all(_header_style_is_approved(worksheet.cell(1, column)) for column in range(1, 16)),
                 "header style differs from the public contract",
@@ -237,10 +295,22 @@ class PublicWorkbookAssetTests(unittest.TestCase):
                 "ZIP manifest differs from the exact allowlist",
             )
             names = frozenset(member_names)
-            self.assertTrue(
-                all(not name.startswith("docProps/") for name in names),
-                "ZIP contains document properties",
-            )
+            self.assertNotIn("docProps/custom.xml", names, "ZIP contains private custom properties")
+
+            core_properties = ET.fromstring(archive.read("docProps/core.xml"))
+            core_text = {
+                _local_name(element.tag): (element.text or "").strip()
+                for element in core_properties
+            }
+            self.assertEqual(core_text.get("creator"), "")
+            self.assertEqual(core_text.get("lastModifiedBy"), "")
+            self.assertEqual(core_text.get("created"), "2000-01-01T00:00:00Z")
+            app_properties = ET.fromstring(archive.read("docProps/app.xml"))
+            app_text = {
+                _local_name(element.tag): (element.text or "").strip()
+                for element in app_properties
+            }
+            self.assertEqual(app_text.get("Application"), "Microsoft Excel Compatible / Openpyxl 3.1.5")
 
             content_types = ET.fromstring(archive.read("[Content_Types].xml"))
             defaults = frozenset(
@@ -310,6 +380,52 @@ class PublicWorkbookAssetTests(unittest.TestCase):
             workbook = load_workbook(output_path, read_only=False, data_only=False, keep_links=False)
             workbook.close()
             self.assertTrue(output_path.is_file(), "write_report did not create an output workbook")
+
+    def test_public_asset_generates_a_nonempty_report_with_actual_row_banding(self) -> None:
+        _assert_asset_exists(self)
+        records = pd.DataFrame(
+            [
+                {
+                    "rank": "SKU",
+                    "source": "你的库存",
+                    "name": "Inventory item",
+                    "name_cn": "库存商品",
+                    "price": 12.0,
+                    "diagnostic": "库存诊断",
+                },
+                *[
+                    {
+                        "rank": index,
+                        "source": "echotik",
+                        "name": f"Product {index}",
+                        "name_cn": f"商品 {index}",
+                        "price": 10.0 + index,
+                        "gmv": 1000 - index,
+                        "gmv_7d": 100 - index,
+                        "gmv_trend_7d": [1, 2, 3, 4, 5, 6, 7 + index],
+                    }
+                    for index in range(1, 4)
+                ],
+            ]
+        )
+        with TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "report.xlsx"
+            write_report(records, output_path, ASSET_PATH)
+            workbook = load_workbook(output_path, read_only=False, data_only=False, keep_links=False)
+            try:
+                worksheet = workbook.active
+                self.assertEqual(worksheet["A2"].fill.fgColor.rgb, "FFE8F5E9")
+                self.assertNotEqual(worksheet["A3"].fill.fgColor.rgb, worksheet["A4"].fill.fgColor.rgb)
+                self.assertEqual(worksheet["A5"].fill.fgColor.rgb, worksheet["A3"].fill.fgColor.rgb)
+                self.assertEqual(len(worksheet._charts), 3)
+                self.assertTrue(
+                    all(
+                        (chart.anchor.ext.cx, chart.anchor.ext.cy) == EXPECTED_CHART_EXTENT
+                        for chart in worksheet._charts
+                    )
+                )
+            finally:
+                workbook.close()
 
 
 if __name__ == "__main__":

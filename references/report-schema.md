@@ -2,7 +2,7 @@
 
 ## Output contract
 
-- Format: `.xlsx` created from the bundled sanitized `assets/report-template.xlsx`.
+- Format: `.xlsx` created from the bundled sanitized `assets/report-template.xlsx`, whose header, inventory row, alternating product-row styles, column widths, hidden helper columns, row heights, and chart extent mirror the `2026.8.11` reference layout without retaining its business data.
 - Default filename: `YYYY.M.D数据报表.xlsx` in the configured local output directory.
 - Template safety: output must be a different path from the asset. Never overwrite or modify `assets/report-template.xlsx`.
 - Active-sheet columns, in order:
