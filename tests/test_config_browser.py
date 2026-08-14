@@ -29,6 +29,10 @@ class FakeAdapter:
         raise AssertionError("configuration loading must not collect data")
 
 
+class UnsafePathAdapter(FakeAdapter):
+    key = "C:/temp/adapter.py"
+
+
 class PublicSkillDocumentationTests(unittest.TestCase):
     def test_public_skill_requires_the_verified_python_version(self) -> None:
         """Lowering the documented minimum would claim an unverified runtime."""
@@ -141,8 +145,35 @@ class ConfigAndBrowserTests(unittest.TestCase):
             '      id: "42"\n'
         )
 
-        with self.assertRaisesRegex(ValueError, "unknown primary platform adapter"):
+        with self.assertRaisesRegex(ValueError, "safe internal registry key"):
             RuntimeConfig.load(path)
+
+    def test_configuration_rejects_unsafe_adapter_key_even_when_registered(self) -> None:
+        unsafe_values = (
+            "C:/temp/adapter.py",
+            "remote.module:Adapter",
+            "../adapter.py",
+            r"local\adapter.py",
+        )
+        for unsafe_value in unsafe_values:
+            with self.subTest(adapter=unsafe_value):
+                adapter = UnsafePathAdapter()
+                adapter.key = unsafe_value
+                path = self.write_yaml(
+                    "primary_platform:\n"
+                    f"  adapter: {unsafe_value!r}\n"
+                    "  categories:\n"
+                    "    - path: [Home, Kitchen]\n"
+                    '      id: "42"\n'
+                )
+
+                with self.assertRaisesRegex(
+                    ValueError, "safe internal registry key"
+                ):
+                    RuntimeConfig.load(
+                        path,
+                        registry=PlatformAdapterRegistry((adapter,)),
+                    )
 
     def test_configuration_rejects_ambiguous_legacy_and_new_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot be combined"):
@@ -166,6 +197,85 @@ class ConfigAndBrowserTests(unittest.TestCase):
                     }
                 },
             )
+
+    def test_echotik_category_rejects_unsupported_keys(self) -> None:
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {
+                "primary_platform": {
+                    "adapter": "echotik",
+                    "categories": [
+                        {
+                            "path": ["Home", "Kitchen"],
+                            "id": "123456",
+                            "module": "remote.module:Adapter",
+                        }
+                    ],
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "unknown EchoTik category field: module"
+        ):
+            config.validate()
+
+    def test_echotik_categories_is_derived_from_primary_platform(self) -> None:
+        config = RuntimeConfig(
+            output_dir=self.base / "reports",
+            profile_dir=self.base / "profile",
+            template_path=self.base / "template.xlsx",
+            primary_platform=PrimaryPlatformConfig(
+                adapter="echotik",
+                categories=({"path": ["Home", "Kitchen"], "id": "654321"},),
+            ),
+        )
+
+        self.assertEqual(
+            config.echotik_categories,
+            (EchoTikCategory(("Home", "Kitchen"), "654321"),),
+        )
+        self.assertNotIn("echotik_categories", config.__dict__)
+
+    def test_direct_construction_rejects_two_category_sources(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            RuntimeConfig(
+                output_dir=self.base / "reports",
+                profile_dir=self.base / "profile",
+                template_path=self.base / "template.xlsx",
+                primary_platform=PrimaryPlatformConfig(
+                    adapter="echotik",
+                    categories=({"path": ["Home"], "id": "111111"},),
+                ),
+                echotik_categories=(
+                    EchoTikCategory(("Kitchen",), "222222"),
+                ),
+            )
+
+    def test_primary_platform_nested_values_are_immutable_snapshots(self) -> None:
+        category = {"path": ["Home", "Kitchen"], "id": "123456"}
+        options = {"filters": {"region": "US"}}
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {
+                "primary_platform": {
+                    "adapter": "echotik",
+                    "categories": [category],
+                    "options": options,
+                }
+            },
+        )
+
+        category["id"] = "999999"
+        category["path"].append("Changed")
+        options["filters"]["region"] = "GB"
+        self.assertEqual(config.primary_platform.categories[0]["id"], "123456")
+        self.assertEqual(
+            config.primary_platform.categories[0]["path"], ("Home", "Kitchen")
+        )
+        self.assertEqual(config.primary_platform.options["filters"]["region"], "US")
+        with self.assertRaises(TypeError):
+            config.primary_platform.categories[0]["id"] = "777777"
 
     def test_relative_paths_resolve_from_the_configuration_directory(self) -> None:
         """A resolver change using the working directory would break this test."""
