@@ -564,6 +564,8 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             for row in populated_rows
             if worksheet.cell(row, 3).value not in (None, "")
         ]
+        if len(source_values) != len(populated_rows):
+            raise ValueError("报表已填充行必须包含来源")
         top_rows = [
             row
             for row in range(2, worksheet.max_row + 1)
@@ -614,7 +616,7 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             len(top_rows) > 20
             or top_labels != expected_labels
             or any(worksheet.cell(row, 3).value != primary_source for row in top_rows)
-            or any(value == -math.inf for value in top_gmvs)
+            or any(not math.isfinite(value) or value < 0 for value in top_gmvs)
             or top_gmvs != sorted(top_gmvs, reverse=True)
         ):
             raise ValueError("Primary platform Top 20 标签或7天GMV顺序无效")

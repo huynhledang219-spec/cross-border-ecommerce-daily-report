@@ -747,6 +747,9 @@ class SourceAndTrendTests(unittest.TestCase):
             r"/\attacker.example/product/1",
             r"https:\attacker.example\product\1",
             "/%5c%5cattacker.example/product/1",
+            "/%00hidden",
+            "/%7fhidden",
+            "/%E2%80%8Bhidden",
         ):
             with self.subTest(unsafe_url=unsafe_url):
                 row = echotik_row(1, 10.0)

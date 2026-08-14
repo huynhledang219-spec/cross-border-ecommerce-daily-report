@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import pandas as pd
 
 from .config import EchoTikCategory, RuntimeConfig
-from .platforms import PlatformCapabilities, PrimaryPlatformConfig
+from .platforms import PlatformCapabilities, PrimaryPlatformConfig, is_safe_detail_url
 from .trends import TrendDataEmpty, read_7d_gmv_trend, select_top_detail_rows
 
 
@@ -289,6 +289,8 @@ def _normalize_detail_url(
     except ValueError as error:
         raise RuntimeError("EchoTik 商品详情链接不安全") from error
     if (
+        not is_safe_detail_url(resolved)
+        or
         trusted.scheme.lower() not in {"http", "https"}
         or not trusted.hostname
         or parsed.scheme.lower() not in {"http", "https"}

@@ -462,6 +462,28 @@ class WorkbookExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Top 20"):
             workbook_module.verify_report(result, self.template_path)
 
+    def test_verify_report_rejects_nonfinite_or_negative_top_gmv(self) -> None:
+        for invalid_gmv in ("Infinity", -1):
+            with self.subTest(invalid_gmv=invalid_gmv):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                workbook.active["J3"] = invalid_gmv
+                workbook.save(result)
+                workbook.close()
+
+                with self.assertRaisesRegex(ValueError, "Top 20"):
+                    workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_a_populated_row_without_source(self) -> None:
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["C23"] = None
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "来源"):
+            workbook_module.verify_report(result, self.template_path)
+
     def test_verify_report_rejects_a_source_that_reappears_after_a_later_group(self) -> None:
         """Unique first-seen sources cannot detect echotik→Amazon→echotik interleaving."""
         result = self.write_fixture()
