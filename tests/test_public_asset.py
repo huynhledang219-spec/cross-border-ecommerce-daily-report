@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from zipfile import ZipFile
 
 import pandas as pd
@@ -410,9 +411,25 @@ class PublicWorkbookAssetTests(unittest.TestCase):
 
     def test_write_report_can_consume_the_public_asset(self) -> None:
         _assert_asset_exists(self)
+        records = pd.DataFrame(
+            [
+                {
+                    "source": "EchoTik",
+                    "name": "Primary product",
+                    "name_cn": "主平台商品",
+                    "gmv_7d": 1,
+                    "detail_url": "https://example.test/products/1",
+                },
+                {"source": "Amazon", "name": "Complete Amazon product title"},
+            ]
+        )
         with TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "report.xlsx"
-            result = write_report(pd.DataFrame(), output_path, ASSET_PATH)
+            with patch(
+                "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+                return_value="完整亚马逊商品标题",
+            ):
+                result = write_report(records, output_path, ASSET_PATH)
             self.assertEqual(result, output_path)
             workbook = load_workbook(output_path, read_only=False, data_only=False, keep_links=False)
             workbook.close()
@@ -443,11 +460,19 @@ class PublicWorkbookAssetTests(unittest.TestCase):
                     }
                     for index in range(1, 4)
                 ],
+                {
+                    "source": "Amazon",
+                    "name": "Complete Amazon product title",
+                },
             ]
         )
         with TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "report.xlsx"
-            write_report(records, output_path, ASSET_PATH)
+            with patch(
+                "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+                return_value="完整亚马逊商品标题",
+            ):
+                write_report(records, output_path, ASSET_PATH)
             workbook = load_workbook(output_path, read_only=False, data_only=False, keep_links=False)
             try:
                 worksheet = workbook.active

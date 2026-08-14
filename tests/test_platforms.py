@@ -222,6 +222,8 @@ class PlatformRegistryTests(unittest.TestCase):
             "data:text/html,malicious",
             "https:///products/42",
             "https://user:password@marketpulse.example/products/42",
+            "https://marketpulse.example/path with space",
+            r"https://marketpulse.example\malformed",
         )
         for invalid_url in invalid_urls:
             with self.subTest(url=invalid_url):

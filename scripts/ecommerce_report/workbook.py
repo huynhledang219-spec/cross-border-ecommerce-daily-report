@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import ast
 import math
 import os
 import re
 import shutil
 import zipfile
+from collections.abc import Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -20,6 +21,7 @@ from openpyxl.chart import LineChart, Reference
 
 from .amazon import translate_amazon_title_to_chinese
 from .config import RuntimeConfig
+from .platforms import is_safe_detail_url
 
 
 REPORT_HEADERS = [
@@ -115,21 +117,45 @@ def _number(value: Any, default: float = -math.inf) -> float:
     return default if pd.isna(numeric) else float(numeric)
 
 
-def _complete_trend(value: Any) -> list[float] | None:
+def _trend_values(value: Any) -> list[float] | None:
+    if value is None or value is pd.NA:
+        return None
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and (len(value) == 0 or all(item is None for item in value))
+    ):
+        return None
+    if (
+        isinstance(value, (str, bytes, bytearray, Mapping))
+        or not isinstance(value, Sequence)
+        or len(value) != 7
+        or any(
+            isinstance(item, bool)
+            or not isinstance(item, Real)
+            or not math.isfinite(float(item))
+            or item < 0
+            for item in value
+        )
+    ):
+        raise ValueError("7天GMV趋势必须为空或包含7个有限非负数")
+    return [float(item) for item in value]
+
+
+def _validate_optional_detail_url(value: Any) -> None:
+    if value is None or value is pd.NA:
+        return
     if isinstance(value, str):
+        if value == "":
+            return
+    else:
         try:
-            value = ast.literal_eval(value)
-        except (SyntaxError, ValueError):
-            return None
-    if not isinstance(value, (list, tuple)) or len(value) != 7:
-        return None
-    try:
-        values = [float(item) for item in value]
-    except (TypeError, ValueError):
-        return None
-    if any(not math.isfinite(item) or item < 0 for item in values):
-        return None
-    return values
+            if bool(pd.isna(value)):
+                return
+        except (TypeError, ValueError):
+            pass
+    if not is_safe_detail_url(value):
+        raise ValueError("商品详情链接必须是安全的绝对 HTTP(S) URL")
 
 
 def _formula_inventory(workbook) -> frozenset[tuple[str, str, str]]:
@@ -212,11 +238,19 @@ def _prepare_records(
     primary_records = [
         record for record in prepared if record.get("source") == primary_source
     ]
+    if not primary_records:
+        raise ValueError("at least one primary platform row is required")
+    if not any(record.get("source") == _AMAZON_SOURCE for record in prepared):
+        raise ValueError("at least one Amazon row is required")
+    for record in prepared:
+        _validate_optional_detail_url(record.get("detail_url"))
     top_records = sorted(
         primary_records,
         key=lambda record: _number(record.get("gmv_7d")),
         reverse=True,
     )[:20]
+    for record in top_records:
+        _trend_values(record.get("gmv_trend_7d"))
     top_positions = {id(record): position for position, record in enumerate(top_records, 1)}
 
     for record in prepared:
@@ -369,7 +403,7 @@ def write_report(
             for output_row, record in enumerate(prepared, start=2):
                 if record.get("_top_position") is None:
                     continue
-                trend = _complete_trend(record.get("gmv_trend_7d"))
+                trend = _trend_values(record.get("gmv_trend_7d"))
                 if trend is None:
                     worksheet.cell(output_row, diagnostic_column).value = "数据为空"
                     continue
@@ -485,8 +519,6 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
     finally:
         template_workbook.close()
     inspection = inspect_report(verified_path)
-    if _sensitive_archive_parts(verified_path):
-        raise ValueError("报表包含敏感账户或本地运行内容")
     if inspection.headers != tuple(REPORT_HEADERS):
         raise ValueError("报表表头不符合公开格式")
     required_hidden = ("商品详情链接",) + _HELPER_HEADERS
@@ -501,6 +533,15 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         worksheet = workbook.active
         if _has_content_beyond_helper_columns(worksheet):
             raise ValueError("报表在V列之后包含额外内容或图形")
+        detail_column = REPORT_HEADERS.index("商品详情链接") + 1
+        for row in range(2, worksheet.max_row + 1):
+            detail_cell = worksheet.cell(row, detail_column)
+            candidates = [detail_cell.value]
+            if detail_cell.hyperlink is not None:
+                candidates.append(detail_cell.hyperlink.target)
+            for candidate in candidates:
+                if candidate not in (None, "") and not is_safe_detail_url(candidate):
+                    raise ValueError("报表商品详情链接目标不安全")
         populated_rows = [
             row
             for row in range(2, worksheet.max_row + 1)
@@ -522,6 +563,10 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             for row in range(2, worksheet.max_row + 1)
             if worksheet.cell(row, 2).value not in (None, "")
         ]
+        if not top_rows:
+            raise ValueError("at least one primary platform row is required")
+        if _AMAZON_SOURCE not in source_values:
+            raise ValueError("at least one Amazon row is required")
         non_reserved_sources = {
             source
             for source in source_values
@@ -568,6 +613,12 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         ):
             raise ValueError("Primary platform Top 20 标签或7天GMV顺序无效")
 
+        top_trends = {
+            row: _trend_values(
+                [worksheet.cell(row, column).value for column in range(16, 23)]
+            )
+            for row in top_rows
+        }
         chart_rows: list[int] = []
         for chart in worksheet._charts:
             chart_row = chart.anchor._from.row + 1
@@ -576,9 +627,7 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             series_range = (
                 chart.series[0].val.numRef.f if len(chart.series) == 1 else ""
             )
-            trend = _complete_trend(
-                [worksheet.cell(chart_row, column).value for column in range(16, 23)]
-            )
+            trend = top_trends.get(chart_row)
             if (
                 chart_row not in top_rows
                 or chart.anchor._from.col != 14
@@ -594,7 +643,12 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         for row in top_rows:
             diagnostic = worksheet.cell(row, 15).value
             has_chart = row in chart_rows
-            if has_chart == (diagnostic == "数据为空"):
+            has_trend = top_trends[row] is not None
+            if (
+                has_trend != has_chart
+                or (not has_trend and diagnostic != "数据为空")
+                or (has_trend and diagnostic == "数据为空")
+            ):
                 raise ValueError("Top 20 行必须具有趋势图或数据为空诊断")
         for row in range(2, worksheet.max_row + 1):
             if worksheet.cell(row, 3).value != _AMAZON_SOURCE:
@@ -612,6 +666,8 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
                 raise ValueError("Amazon 中文全称或英文全称缺失、截断")
     finally:
         workbook.close()
+    if _sensitive_archive_parts(verified_path):
+        raise ValueError("报表包含敏感账户或本地运行内容")
     return inspection
 
 

@@ -226,6 +226,66 @@ class WorkbookExportTests(unittest.TestCase):
         self.assertNotIn(3, chart_rows)
         worksheet.parent.close()
 
+    def test_empty_trend_writes_data_empty_without_a_chart(self) -> None:
+        records = normalized_records()
+        records.at[22, "gmv_trend_7d"] = []
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="包含每个重要细节的完整英文商品标题",
+        ):
+            result = write_report(records, self.output_path, self.template_path)
+
+        workbook = load_workbook(result, data_only=False)
+        try:
+            worksheet = workbook.active
+            self.assertEqual(worksheet["B3"].value, "Top 1")
+            self.assertEqual(worksheet["O3"].value, "数据为空")
+            self.assertNotIn(
+                3, {chart.anchor._from.row + 1 for chart in worksheet._charts}
+            )
+        finally:
+            workbook.close()
+
+    def test_malformed_present_trend_does_not_replace_an_existing_report(self) -> None:
+        invalid_trends = (
+            "[1, 2, 3, 4, 5, 6, 7]",
+            True,
+            -1,
+            float("nan"),
+            float("inf"),
+            [1, 2, 3, 4, 5, 6],
+            [1, 2, 3, 4, 5, 6, True],
+            [1, 2, 3, 4, 5, 6, "7"],
+            [1, 2, 3, 4, 5, 6, float("nan")],
+            [1, 2, 3, 4, 5, 6, float("inf")],
+            [1, 2, 3, 4, 5, 6, -1],
+        )
+        for invalid_trend in invalid_trends:
+            with self.subTest(trend=invalid_trend):
+                self.output_path.parent.mkdir(parents=True, exist_ok=True)
+                original = b"existing verified report"
+                self.output_path.write_bytes(original)
+                records = normalized_records()
+                records.at[22, "gmv_trend_7d"] = invalid_trend
+
+                with patch(
+                    "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+                    return_value="包含每个重要细节的完整英文商品标题",
+                ):
+                    with self.assertRaisesRegex(ValueError, "7天GMV趋势"):
+                        write_report(records, self.output_path, self.template_path)
+                self.assertEqual(self.output_path.read_bytes(), original)
+
+    def test_verifier_never_certifies_partial_trend_data_as_empty(self) -> None:
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["P3"] = 1
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "7天GMV趋势"):
+            workbook_module.verify_report(result, self.template_path)
+
     def test_inspect_report_returns_a_stable_public_audit_summary(self) -> None:
         result = self.write_fixture()
 
@@ -324,6 +384,54 @@ class WorkbookExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "表头"):
             workbook_module.verify_report(result, self.template_path)
 
+    def test_writer_and_verifier_require_primary_and_amazon_sources(self) -> None:
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        original = b"existing verified report"
+        cases = (
+            ("empty", pd.DataFrame(), "primary platform"),
+            (
+                "missing Amazon",
+                normalized_records()
+                .query("source != 'Amazon'")
+                .reset_index(drop=True),
+                "Amazon",
+            ),
+            (
+                "missing primary",
+                normalized_records()
+                .query("source != 'EchoTik'")
+                .reset_index(drop=True),
+                "primary platform",
+            ),
+        )
+        for name, records, message in cases:
+            with self.subTest(case=name):
+                self.output_path.write_bytes(original)
+                with self.assertRaisesRegex(ValueError, message):
+                    write_report(records, self.output_path, self.template_path)
+                self.assertEqual(self.output_path.read_bytes(), original)
+
+        for missing_source in ("Amazon", "EchoTik"):
+            with self.subTest(verifier_missing=missing_source):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                worksheet = workbook.active
+                if missing_source == "Amazon":
+                    worksheet.delete_rows(25)
+                    worksheet.auto_filter.ref = "A1:O24"
+                else:
+                    worksheet.delete_rows(3, 22)
+                    worksheet._charts = []
+                    worksheet.auto_filter.ref = "A1:O3"
+                workbook.save(result)
+                workbook.close()
+
+                expected_message = (
+                    "Amazon" if missing_source == "Amazon" else "primary platform"
+                )
+                with self.assertRaisesRegex(ValueError, expected_message):
+                    workbook_module.verify_report(result, self.template_path)
+
     def test_verify_report_rejects_wrong_freeze_pane_or_public_filter_range(self) -> None:
         """A valid-looking table must still preserve the promised navigation layout."""
         for mutation in ("freeze", "filter"):
@@ -418,6 +526,51 @@ class WorkbookExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "V列之后"):
             workbook_module.verify_report(result, self.template_path)
 
+    def test_detail_urls_are_safe_before_write_and_during_verification(self) -> None:
+        invalid_urls = (
+            "products/42",
+            "/products/42",
+            "file:///etc/passwd",
+            r"\\server\share\product.html",
+            "javascript:alert(1)",
+            "data:text/html,malicious",
+            "https:///products/42",
+            "https://user:password@example.test/products/42",
+            "https://example.test/path with space",
+            r"https://example.test\malformed",
+        )
+        for invalid_url in invalid_urls:
+            with self.subTest(writer_url=invalid_url):
+                self.output_path.parent.mkdir(parents=True, exist_ok=True)
+                original = b"existing verified report"
+                self.output_path.write_bytes(original)
+                records = normalized_records()
+                records.at[22, "detail_url"] = invalid_url
+                with self.assertRaisesRegex(ValueError, "安全的绝对 HTTP"):
+                    write_report(records, self.output_path, self.template_path)
+                self.assertEqual(self.output_path.read_bytes(), original)
+
+            with self.subTest(verifier_url=invalid_url):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                worksheet = workbook.active
+                worksheet["N3"].hyperlink = invalid_url
+                worksheet["N3"].value = ""
+                workbook.save(result)
+                workbook.close()
+                with self.assertRaisesRegex(ValueError, "详情链接"):
+                    workbook_module.verify_report(result, self.template_path)
+
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        worksheet = workbook.active
+        worksheet["N3"].hyperlink = None
+        worksheet["N3"].value = "javascript:alert(1)"
+        workbook.save(result)
+        workbook.close()
+        with self.assertRaisesRegex(ValueError, "详情链接"):
+            workbook_module.verify_report(result, self.template_path)
+
     def test_verify_report_rejects_a_drawing_anchored_beyond_helper_columns(
         self,
     ) -> None:
@@ -506,20 +659,15 @@ class WorkbookExportTests(unittest.TestCase):
         self.output_path.parent.mkdir(parents=True)
         original = b"existing verified report"
         self.output_path.write_bytes(original)
-        records = pd.DataFrame(
-            [
-                {
-                    "source": "EchoTik",
-                    "name": "Contact user@example.com",
-                    "name_cn": "敏感测试",
-                    "gmv_7d": 1,
-                    "diagnostic": "数据为空",
-                }
-            ]
-        )
+        records = normalized_records()
+        records.at[22, "name"] = "Contact user@example.com"
 
-        with self.assertRaisesRegex(ValueError, "敏感"):
-            write_report(records, self.output_path, self.template_path)
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="包含每个重要细节的完整英文商品标题",
+        ):
+            with self.assertRaisesRegex(ValueError, "敏感"):
+                write_report(records, self.output_path, self.template_path)
 
         self.assertEqual(self.output_path.read_bytes(), original)
 
@@ -555,11 +703,19 @@ class WorkbookExportTests(unittest.TestCase):
                     "name_cn": "=1+1",
                     "gmv_7d": 1,
                     "detail_url": "https://echotik.example/product/1",
-                }
+                },
+                {
+                    "source": "Amazon",
+                    "name": "Complete Amazon product title",
+                },
             ]
         )
 
-        result = write_report(records, self.output_path, self.template_path)
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="完整亚马逊商品标题",
+        ):
+            result = write_report(records, self.output_path, self.template_path)
 
         workbook = load_workbook(result, data_only=False)
         try:
@@ -586,8 +742,14 @@ class WorkbookExportTests(unittest.TestCase):
             injected.close()
 
         with patch.object(Workbook, "save", save_then_inject_formula):
-            with self.assertRaisesRegex(ValueError, "模板之外的公式"):
-                write_report(pd.DataFrame(), self.output_path, self.template_path)
+            with patch(
+                "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+                return_value="包含每个重要细节的完整英文商品标题",
+            ):
+                with self.assertRaisesRegex(ValueError, "模板之外的公式"):
+                    write_report(
+                        normalized_records(), self.output_path, self.template_path
+                    )
 
         self.assertEqual(self.output_path.read_bytes(), original_report)
 

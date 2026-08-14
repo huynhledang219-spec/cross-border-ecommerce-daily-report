@@ -123,7 +123,7 @@ def validate_normalized_records(records: pd.DataFrame, source: str) -> None:
                 "finite nonnegative numbers"
             )
 
-    if any(not _is_absolute_http_url(value) for value in records["detail_url"]):
+    if any(not is_safe_detail_url(value) for value in records["detail_url"]):
         raise ValueError(
             f"{source} normalized detail_url must be an absolute HTTP(S) URL"
         )
@@ -153,8 +153,15 @@ def _is_finite_nonnegative_number(value: Any) -> bool:
     )
 
 
-def _is_absolute_http_url(value: str) -> bool:
-    if any(character.isspace() for character in value):
+def is_safe_detail_url(value: Any) -> bool:
+    """Accept only absolute browser-safe HTTP(S) product-detail URLs."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or any(character.isspace() for character in value)
+    ):
         return False
     try:
         parsed = urlparse(value)
