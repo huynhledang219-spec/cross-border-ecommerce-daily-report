@@ -11,9 +11,12 @@ def chrome_launch_options(visible: bool) -> dict:
     }
 
 
-def open_echotik_context(playwright, config: RuntimeConfig):
+def open_platform_context(playwright, config: RuntimeConfig):
     config.validate()
     return playwright.chromium.launch_persistent_context(
         config.profile_dir,
         **chrome_launch_options(visible=True),
     )
+
+
+open_echotik_context = open_platform_context

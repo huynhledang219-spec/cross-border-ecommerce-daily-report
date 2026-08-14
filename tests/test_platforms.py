@@ -4,6 +4,11 @@ import unittest
 
 import pandas as pd
 
+from scripts.ecommerce_report.browser import (
+    open_echotik_context,
+    open_platform_context,
+)
+from scripts.ecommerce_report.echotik import ECHOTIK_ADAPTER
 from scripts.ecommerce_report.platforms import (
     PlatformAdapterRegistry,
     PlatformCapabilities,
@@ -32,6 +37,25 @@ class FakeAdapter:
 
 
 class PlatformRegistryTests(unittest.TestCase):
+    def test_platform_context_keeps_the_echotik_compatibility_alias(self) -> None:
+        self.assertIs(open_echotik_context, open_platform_context)
+
+    def test_echotik_adapter_declares_complete_capabilities(self) -> None:
+        self.assertEqual(ECHOTIK_ADAPTER.key, "echotik")
+        self.assertEqual(ECHOTIK_ADAPTER.display_name, "EchoTik")
+        self.assertEqual(ECHOTIK_ADAPTER.capabilities.missing_required(), ())
+
+    def test_echotik_adapter_rejects_unproven_category_id(self) -> None:
+        config = PrimaryPlatformConfig(
+            adapter="echotik",
+            categories=(
+                {"path": ["宠物用品", "猫狗配件"], "id": "not-numeric"},
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "digits only"):
+            ECHOTIK_ADAPTER.validate_config(config)
+
     def test_default_registry_resolves_echotik_with_complete_capabilities(self) -> None:
         adapter = build_default_registry().resolve("echotik")
 

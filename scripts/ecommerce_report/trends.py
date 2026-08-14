@@ -50,13 +50,13 @@ def read_7d_gmv_trend(page) -> list[float]:
         raise TrendDataEmpty(_EMPTY_TREND_MESSAGE) from error
 
 
-def select_top_detail_rows(records, limit: int = 20) -> list[dict]:
-    """Freeze the top twenty EchoTik identities before checking detail URLs."""
+def select_top_detail_rows(records, source: str, limit: int = 20) -> list[dict]:
+    """Freeze one source's top twenty identities before checking detail URLs."""
     safe_limit = min(max(int(limit), 0), 20)
     candidates = [
         record
         for record in records
-        if record.get("source") == "echotik"
+        if record.get("source") == source
     ]
     return sorted(
         candidates,

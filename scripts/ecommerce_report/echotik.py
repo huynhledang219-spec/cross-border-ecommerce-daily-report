@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
-from .config import RuntimeConfig
+from .config import EchoTikCategory, RuntimeConfig
 from .platforms import PlatformCapabilities, PrimaryPlatformConfig
 from .trends import TrendDataEmpty, read_7d_gmv_trend, select_top_detail_rows
 
@@ -26,6 +27,7 @@ class EchoTikAdapter:
     def validate_config(self, config: PrimaryPlatformConfig) -> None:
         if config.adapter != self.key:
             raise ValueError("EchoTik adapter requires the echotik key")
+        _parse_echotik_categories(config.categories)
 
     def collect(
         self,
@@ -36,10 +38,54 @@ class EchoTikAdapter:
         trend_days: int,
         pages_per_category: int,
     ) -> pd.DataFrame:
-        raise RuntimeError("EchoTik adapter collection has not been migrated yet")
+        self.validate_config(config)
+        if trend_days != 7:
+            raise ValueError("EchoTik trend_days must be 7")
+        return scrape_echotik(
+            context,
+            _parse_echotik_categories(config.categories),
+            detail_limit=detail_limit,
+            pages_per_category=pages_per_category,
+        )
 
 
 ECHOTIK_ADAPTER = EchoTikAdapter()
+
+
+def _parse_echotik_categories(
+    categories: Sequence[Mapping[str, object]],
+) -> tuple[EchoTikCategory, ...]:
+    if not categories:
+        raise ValueError("EchoTik requires at least one category")
+
+    parsed: list[EchoTikCategory] = []
+    expected_fields = {"path", "id"}
+    for category in categories:
+        if not isinstance(category, Mapping):
+            raise ValueError("EchoTik category must be a mapping")
+        unknown = set(category) - expected_fields
+        if unknown:
+            raise ValueError(
+                f"unknown EchoTik category field: {sorted(map(str, unknown))[0]}"
+            )
+        missing = expected_fields - set(category)
+        if missing:
+            raise ValueError(
+                f"missing EchoTik category field: {sorted(missing)[0]}"
+            )
+
+        path = category["path"]
+        if (
+            not isinstance(path, (list, tuple))
+            or not path
+            or any(not isinstance(label, str) or not label.strip() for label in path)
+        ):
+            raise ValueError("EchoTik category path must contain non-empty labels")
+        category_id = str(category["id"])
+        if not category_id.isdigit():
+            raise ValueError("EchoTik category ID must contain digits only")
+        parsed.append(EchoTikCategory(tuple(path), category_id))
+    return tuple(parsed)
 
 
 def _wait(page, stage: str) -> None:
@@ -79,7 +125,7 @@ def parse_echotik_row(
     original_title = (product_name or details[0]).strip()
     translated_title = (name_cn or "").strip()
     return {
-        "source": "echotik",
+        "source": "EchoTik",
         "name": original_title,
         "name_cn": translated_title,
         "raw_title": original_title,
@@ -144,12 +190,31 @@ def _has_human_verification(page) -> bool:
     return "真人验证" in page_text or "请完成验证" in page_text
 
 
-def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
+def scrape_echotik(
+    context,
+    config: RuntimeConfig | Sequence[EchoTikCategory],
+    *,
+    detail_limit: int | None = None,
+    pages_per_category: int | None = None,
+) -> pd.DataFrame:
     """Collect configured EchoTik categories and enrich at most twenty details."""
+    if isinstance(config, RuntimeConfig):
+        categories = config.echotik_categories
+        active_detail_limit = config.detail_limit
+        active_pages_per_category = config.pages_per_category
+    else:
+        categories = tuple(config)
+        if detail_limit is None or pages_per_category is None:
+            raise ValueError(
+                "EchoTik category collection requires detail_limit and pages_per_category"
+            )
+        active_detail_limit = detail_limit
+        active_pages_per_category = pages_per_category
+
     products: list[dict] = []
     page = context.new_page()
     try:
-        for category in config.echotik_categories:
+        for category in categories:
             page.goto(
                 "https://echotik.live/products",
                 wait_until="domcontentloaded",
@@ -168,7 +233,7 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
                     f"无法在 EchoTik 页面确认类目：{visible_path}"
                 ) from error
 
-            for page_number in range(1, config.pages_per_category + 1):
+            for page_number in range(1, active_pages_per_category + 1):
                 _dismiss_promotion_modal(page)
                 _set_bulk_translation(page, False)
                 rows = page.locator("tr")
@@ -219,7 +284,7 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
                     products.append(item)
                     added += 1
 
-                if page_number == config.pages_per_category or added == 0:
+                if page_number == active_pages_per_category or added == 0:
                     break
                 try:
                     page.get_by_text(str(page_number + 1), exact=True).last.click(
@@ -229,7 +294,9 @@ def scrape_echotik(context, config: RuntimeConfig) -> pd.DataFrame:
                 except Exception:
                     break
 
-        for product in select_top_detail_rows(products, config.detail_limit):
+        for product in select_top_detail_rows(
+            products, ECHOTIK_ADAPTER.display_name, active_detail_limit
+        ):
             detail_url = product["detail_url"]
             if not detail_url:
                 product["diagnostic"] = "数据为空"

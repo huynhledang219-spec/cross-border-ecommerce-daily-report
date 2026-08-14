@@ -14,7 +14,12 @@ from scripts.ecommerce_report.config import (
     EchoTikCategory,
     RuntimeConfig,
 )
-from scripts.ecommerce_report.echotik import parse_echotik_row, scrape_echotik
+from scripts.ecommerce_report.echotik import (
+    ECHOTIK_ADAPTER,
+    parse_echotik_row,
+    scrape_echotik,
+)
+from scripts.ecommerce_report.platforms import PrimaryPlatformConfig
 from scripts.ecommerce_report.trends import (
     TrendDataEmpty,
     read_7d_gmv_trend,
@@ -488,6 +493,7 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(record["gmv"], 120_000_000)
         self.assertEqual(record["creators"], 30_000)
         self.assertEqual(record["videos"], 40_000)
+        self.assertEqual(record["source"], "EchoTik")
 
     def test_read_7d_gmv_trend_selects_exact_controls_and_returns_exact_values(self) -> None:
         page = FakeEchoTikPage([], {}, trend_values=[10, 20.125, 30, 40, 50, 60, 70])
@@ -539,41 +545,52 @@ class SourceAndTrendTests(unittest.TestCase):
                 else:
                     self.fail("trend control failure was not reported")
 
+    def test_top_selection_uses_the_selected_source(self) -> None:
+        records = [
+            {"source": "MarketPulse", "gmv_7d": 200},
+            {"source": "EchoTik", "gmv_7d": 300},
+            {"source": "MarketPulse", "gmv_7d": 100},
+        ]
+
+        selected = select_top_detail_rows(records, "MarketPulse", 20)
+
+        self.assertEqual([row["gmv_7d"] for row in selected], [200, 100])
+
     def test_selects_only_twenty_echotik_details_by_7d_gmv(self) -> None:
         records = [
-            {"source": "echotik", "gmv_7d": value, "detail_url": f"/product/{value}"}
+            {"source": "EchoTik", "gmv_7d": value, "detail_url": f"/product/{value}"}
             for value in range(25)
         ] + [
             {"source": "Amazon", "gmv_7d": 10_000 + value, "detail_url": f"/amazon/{value}"}
             for value in range(5)
         ]
 
-        selected = select_top_detail_rows(records)
+        selected = select_top_detail_rows(records, "EchoTik")
 
         self.assertEqual(20, len(selected))
-        self.assertTrue(all(row["source"] == "echotik" for row in selected))
+        self.assertTrue(all(row["source"] == "EchoTik" for row in selected))
         self.assertEqual(list(range(24, 4, -1)), [row["gmv_7d"] for row in selected])
 
     def test_select_top_details_never_exceeds_twenty_even_for_a_larger_limit(self) -> None:
         records = [
-            {"source": "echotik", "gmv_7d": value, "detail_url": f"/product/{value}"}
+            {"source": "EchoTik", "gmv_7d": value, "detail_url": f"/product/{value}"}
             for value in range(30)
         ]
 
-        self.assertEqual(20, len(select_top_detail_rows(records, limit=100)))
+        self.assertEqual(20, len(select_top_detail_rows(records, "EchoTik", limit=100)))
 
     def test_top_twenty_is_fixed_before_missing_detail_urls_are_examined(self) -> None:
         """Filtering missing URLs first would incorrectly substitute the twenty-first item."""
         records = [
             {
-                "source": "echotik",
+                "source": "EchoTik",
                 "gmv_7d": value,
                 "detail_url": None if value == 25 else f"/product/{value}",
             }
             for value in range(25, 4, -1)
         ]
 
-        selected = select_top_detail_rows(records)
+        selected = select_top_detail_rows(records, "EchoTik")
 
         self.assertEqual([row["gmv_7d"] for row in selected], list(range(25, 5, -1)))
         self.assertIsNone(selected[0]["detail_url"])
@@ -599,6 +616,27 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(detail_navigations[0], "https://echotik.live/product/24")
         self.assertEqual(context.created_pages, 1)
         self.assertTrue(page.closed)
+
+    def test_echotik_adapter_collects_from_platform_config(self) -> None:
+        page = FakeEchoTikPage(
+            [echotik_row(1, 10.0)],
+            {"Kitchen": "123456"},
+        )
+        config = PrimaryPlatformConfig(
+            adapter="echotik",
+            categories=({"path": ["Home", "Kitchen"], "id": "123456"},),
+        )
+
+        frame = ECHOTIK_ADAPTER.collect(
+            FakeEchoTikContext(page),
+            config,
+            detail_limit=20,
+            trend_days=7,
+            pages_per_category=1,
+        )
+
+        self.assertEqual(frame["source"].tolist(), ["EchoTik"])
+        self.assertEqual(frame["gmv_trend_7d"].tolist(), [[1, 2, 3, 4, 5, 6, 7]])
 
     def test_missing_url_in_frozen_top_twenty_is_data_empty_without_substitution(self) -> None:
         """Opening the next-ranked URL would make collection and workbook Top identities diverge."""
