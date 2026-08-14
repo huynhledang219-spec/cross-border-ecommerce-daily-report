@@ -10,6 +10,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
 from openpyxl.styles import Alignment, PatternFill
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 from scripts.ecommerce_report import workbook as workbook_module
 from scripts.ecommerce_report.workbook import REPORT_HEADERS, inspect_report, write_report
@@ -538,6 +539,11 @@ class WorkbookExportTests(unittest.TestCase):
             "https://user:password@example.test/products/42",
             "https://example.test/path with space",
             r"https://example.test\malformed",
+            "https://example.test/products/42\x7fhidden",
+            "https://example.test/products/42\u200bhidden",
+            "https://example.test/products/42%00hidden",
+            "https://example.test/products/42%0d%0ahidden",
+            "https://example.test/products/42%E2%80%8Bhidden",
         )
         for invalid_url in invalid_urls:
             with self.subTest(writer_url=invalid_url):
@@ -570,6 +576,29 @@ class WorkbookExportTests(unittest.TestCase):
         workbook.close()
         with self.assertRaisesRegex(ValueError, "详情链接"):
             workbook_module.verify_report(result, self.template_path)
+
+    def test_verifier_requires_matching_external_detail_hyperlinks(self) -> None:
+        for case in ("internal", "missing", "mismatch"):
+            with self.subTest(case=case):
+                result = self.write_fixture()
+                workbook = load_workbook(result)
+                worksheet = workbook.active
+                if case == "internal":
+                    worksheet["N3"].hyperlink = Hyperlink(
+                        ref="N3", location="Sheet1!A1"
+                    )
+                elif case == "missing":
+                    worksheet["N3"].hyperlink = Hyperlink(ref="N3")
+                else:
+                    worksheet["N3"].value = "https://example.test/products/42"
+                    worksheet["N3"].hyperlink = (
+                        "https://example.test/products/different"
+                    )
+                workbook.save(result)
+                workbook.close()
+
+                with self.assertRaisesRegex(ValueError, "详情链接"):
+                    workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_a_drawing_anchored_beyond_helper_columns(
         self,

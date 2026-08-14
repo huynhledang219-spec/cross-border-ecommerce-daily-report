@@ -536,11 +536,18 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         detail_column = REPORT_HEADERS.index("商品详情链接") + 1
         for row in range(2, worksheet.max_row + 1):
             detail_cell = worksheet.cell(row, detail_column)
-            candidates = [detail_cell.value]
+            detail_value = detail_cell.value
+            if detail_value not in (None, "") and not is_safe_detail_url(
+                detail_value
+            ):
+                raise ValueError("报表商品详情链接目标不安全")
             if detail_cell.hyperlink is not None:
-                candidates.append(detail_cell.hyperlink.target)
-            for candidate in candidates:
-                if candidate not in (None, "") and not is_safe_detail_url(candidate):
+                detail_target = detail_cell.hyperlink.target
+                if (
+                    not is_safe_detail_url(detail_target)
+                    or not is_safe_detail_url(detail_value)
+                    or detail_target != detail_value
+                ):
                     raise ValueError("报表商品详情链接目标不安全")
         populated_rows = [
             row

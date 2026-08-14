@@ -224,6 +224,15 @@ class PlatformRegistryTests(unittest.TestCase):
             "https://user:password@marketpulse.example/products/42",
             "https://marketpulse.example/path with space",
             r"https://marketpulse.example\malformed",
+            "https://marketpulse.example/products/42\x00hidden",
+            "https://marketpulse.example/products/42\r\nhidden",
+            "https://marketpulse.example/products/42\x7fhidden",
+            "https://marketpulse.example/products/42\u200bhidden",
+            "https://marketpulse.example/products/42%00hidden",
+            "https://marketpulse.example/products/42%0d%0ahidden",
+            "https://marketpulse.example/products/42%7Fhidden",
+            "https://marketpulse.example/products/42%C2%85hidden",
+            "https://marketpulse.example/products/42%E2%80%8Bhidden",
         )
         for invalid_url in invalid_urls:
             with self.subTest(url=invalid_url):
@@ -232,6 +241,14 @@ class PlatformRegistryTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "absolute HTTP.S. URL"):
                     validate_normalized_records(records, "MarketPulse")
+
+    def test_normalized_records_preserve_safe_international_detail_paths(self) -> None:
+        records = _complete_normalized_records()
+        records.at[0, "detail_url"] = (
+            "https://marketpulse.example/商品/猫咪梳子?地区=中国"
+        )
+
+        validate_normalized_records(records, "MarketPulse")
 
     def test_optional_trend_requires_seven_finite_nonnegative_values(self) -> None:
         invalid_trends = (

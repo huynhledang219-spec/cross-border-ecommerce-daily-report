@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from math import isfinite
 from numbers import Real
 from typing import Any, Mapping, Protocol, Sequence
-from urllib.parse import urlparse
+from unicodedata import category
+from urllib.parse import unquote, urlparse
 
 import pandas as pd
 
@@ -161,6 +162,8 @@ def is_safe_detail_url(value: Any) -> bool:
         or not value
         or "\\" in value
         or any(character.isspace() for character in value)
+        or _has_url_control_or_format_character(value)
+        or _has_url_control_or_format_character(unquote(value))
     ):
         return False
     try:
@@ -174,6 +177,10 @@ def is_safe_detail_url(value: Any) -> bool:
         and parsed.username is None
         and parsed.password is None
     )
+
+
+def _has_url_control_or_format_character(value: str) -> bool:
+    return any(category(character) in {"Cc", "Cf"} for character in value)
 
 
 def _is_missing_optional_value(value: Any) -> bool:
