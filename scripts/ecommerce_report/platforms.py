@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
+from numbers import Real
 from typing import Any, Mapping, Protocol, Sequence
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -22,6 +25,18 @@ REQUIRED_PRODUCT_FIELDS = frozenset(
         "creators",
         "detail_url",
     }
+)
+
+_REQUIRED_TEXT_FIELDS = ("name", "name_cn", "category", "detail_url")
+_REQUIRED_NUMERIC_FIELDS = (
+    "price",
+    "rating",
+    "reviews",
+    "gmv",
+    "gmv_7d",
+    "sold_7d",
+    "videos",
+    "creators",
 )
 
 
@@ -86,8 +101,76 @@ def validate_normalized_records(records: pd.DataFrame, source: str) -> None:
         raise ValueError(
             f"{source} normalized product fields missing: {', '.join(sorted(missing))}"
         )
-    if not records.empty and set(records["source"].dropna()) != {source}:
+
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("normalized source display name must be a non-empty string")
+    if any(value != source for value in records["source"]):
         raise ValueError(f"{source} normalized source label is inconsistent")
+
+    for field_name in _REQUIRED_TEXT_FIELDS:
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in records[field_name]
+        ):
+            raise ValueError(
+                f"{source} normalized text field {field_name} must be a non-empty string"
+            )
+
+    for field_name in _REQUIRED_NUMERIC_FIELDS:
+        if any(not _is_finite_nonnegative_number(value) for value in records[field_name]):
+            raise ValueError(
+                f"{source} normalized numeric field {field_name} must contain "
+                "finite nonnegative numbers"
+            )
+
+    if any(not _is_absolute_http_url(value) for value in records["detail_url"]):
+        raise ValueError(
+            f"{source} normalized detail_url must be an absolute HTTP(S) URL"
+        )
+
+    if "gmv_trend_7d" in records.columns:
+        for trend in records["gmv_trend_7d"]:
+            if _is_missing_optional_value(trend):
+                continue
+            if (
+                isinstance(trend, (str, bytes, Mapping))
+                or not isinstance(trend, Sequence)
+                or len(trend) != 7
+                or any(not _is_finite_nonnegative_number(value) for value in trend)
+            ):
+                raise ValueError(
+                    f"{source} normalized gmv_trend_7d must contain exactly seven "
+                    "finite nonnegative numbers"
+                )
+
+
+def _is_finite_nonnegative_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, Real)
+        and isfinite(float(value))
+        and value >= 0
+    )
+
+
+def _is_absolute_http_url(value: str) -> bool:
+    if any(character.isspace() for character in value):
+        return False
+    try:
+        parsed = urlparse(value)
+        parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+
+
+def _is_missing_optional_value(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def build_default_registry() -> PlatformAdapterRegistry:

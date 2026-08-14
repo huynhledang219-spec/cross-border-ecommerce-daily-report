@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from math import inf, nan
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -37,6 +38,45 @@ class FakeAdapter:
 
     def collect(self, context, config, *, detail_limit, trend_days, pages_per_category):
         return pd.DataFrame()
+
+
+def _complete_normalized_records() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "source": "MarketPulse",
+                "name": "Original product title",
+                "name_cn": "完整中文商品名",
+                "category": "Home > Kitchen",
+                "price": 19.99,
+                "rating": 4.8,
+                "reviews": 125,
+                "gmv": 10_000.0,
+                "gmv_7d": 2_500.0,
+                "sold_7d": 80,
+                "videos": 12,
+                "creators": 7,
+                "detail_url": "https://marketpulse.example/products/42?region=US",
+                "gmv_trend_7d": [100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 400.0],
+            },
+            {
+                "source": "MarketPulse",
+                "name": "Second original title",
+                "name_cn": "第二个完整中文商品名",
+                "category": "Home > Storage",
+                "price": 0,
+                "rating": 0,
+                "reviews": 0,
+                "gmv": 0,
+                "gmv_7d": 0,
+                "sold_7d": 0,
+                "videos": 0,
+                "creators": 0,
+                "detail_url": "http://marketpulse.example/products/43",
+                "gmv_trend_7d": None,
+            },
+        ]
+    )
 
 
 class PlatformRegistryTests(unittest.TestCase):
@@ -114,3 +154,95 @@ class PlatformRegistryTests(unittest.TestCase):
         records = pd.DataFrame([{"source": "MarketPulse", "name": "Product"}])
         with self.assertRaisesRegex(ValueError, "normalized product fields"):
             validate_normalized_records(records, "MarketPulse")
+
+    def test_complete_normalized_records_are_accepted(self) -> None:
+        validate_normalized_records(_complete_normalized_records(), "MarketPulse")
+
+    def test_empty_complete_frame_remains_for_pipeline_empty_source_handling(self) -> None:
+        records = _complete_normalized_records().iloc[0:0]
+
+        validate_normalized_records(records, "MarketPulse")
+
+    def test_normalized_records_require_exact_nonblank_source_on_every_row(self) -> None:
+        for invalid_source in (
+            None,
+            pd.NA,
+            nan,
+            "",
+            "   ",
+            "marketpulse",
+            "EchoTik",
+        ):
+            with self.subTest(source=invalid_source):
+                records = _complete_normalized_records()
+                records.at[1, "source"] = invalid_source
+
+                with self.assertRaisesRegex(ValueError, "source label is inconsistent"):
+                    validate_normalized_records(records, "MarketPulse")
+
+    def test_normalized_records_reject_null_or_blank_required_text(self) -> None:
+        for field in ("name", "name_cn", "category", "detail_url"):
+            for invalid_value in (None, "", "   "):
+                with self.subTest(field=field, value=invalid_value):
+                    records = _complete_normalized_records()
+                    records[field] = records[field].astype(object)
+                    records.at[0, field] = invalid_value
+
+                    with self.assertRaisesRegex(ValueError, f"text field {field}"):
+                        validate_normalized_records(records, "MarketPulse")
+
+    def test_normalized_records_require_finite_nonnegative_numeric_fields(self) -> None:
+        numeric_fields = (
+            "price",
+            "rating",
+            "reviews",
+            "gmv",
+            "gmv_7d",
+            "sold_7d",
+            "videos",
+            "creators",
+        )
+        for field in numeric_fields:
+            for invalid_value in (None, "100", nan, inf, -1, True):
+                with self.subTest(field=field, value=invalid_value):
+                    records = _complete_normalized_records()
+                    records[field] = records[field].astype(object)
+                    records.at[0, field] = invalid_value
+
+                    with self.assertRaisesRegex(ValueError, f"numeric field {field}"):
+                        validate_normalized_records(records, "MarketPulse")
+
+    def test_normalized_records_require_absolute_http_detail_urls(self) -> None:
+        invalid_urls = (
+            "products/42",
+            "/products/42",
+            "file:///etc/passwd",
+            r"\\server\share\product.html",
+            "javascript:alert(1)",
+            "data:text/html,malicious",
+            "https:///products/42",
+        )
+        for invalid_url in invalid_urls:
+            with self.subTest(url=invalid_url):
+                records = _complete_normalized_records()
+                records.at[0, "detail_url"] = invalid_url
+
+                with self.assertRaisesRegex(ValueError, "absolute HTTP.S. URL"):
+                    validate_normalized_records(records, "MarketPulse")
+
+    def test_optional_trend_requires_seven_finite_nonnegative_values(self) -> None:
+        invalid_trends = (
+            [],
+            [1, 2, 3, 4, 5, 6],
+            [1, 2, 3, 4, 5, 6, nan],
+            [1, 2, 3, 4, 5, 6, inf],
+            [1, 2, 3, 4, 5, 6, -1],
+            [1, 2, 3, 4, 5, 6, "7"],
+        )
+        for invalid_trend in invalid_trends:
+            with self.subTest(trend=invalid_trend):
+                records = _complete_normalized_records()
+                records.at[0, "gmv_trend_7d"] = invalid_trend
+
+                with self.assertRaisesRegex(ValueError, "seven finite nonnegative"):
+                    validate_normalized_records(records, "MarketPulse")
