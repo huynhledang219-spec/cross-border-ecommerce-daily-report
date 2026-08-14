@@ -277,6 +277,42 @@ class ConfigAndBrowserTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             config.primary_platform.categories[0]["id"] = "777777"
 
+    def test_primary_platform_set_options_are_immutable_snapshots(self) -> None:
+        source_tags = {"sale", "seasonal"}
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {
+                "primary_platform": {
+                    "adapter": "echotik",
+                    "categories": [
+                        {"path": ["Home", "Kitchen"], "id": "123456"}
+                    ],
+                    "options": {"tags": source_tags},
+                }
+            },
+        )
+
+        source_tags.add("changed")
+        self.assertEqual(
+            config.primary_platform.options["tags"],
+            frozenset({"sale", "seasonal"}),
+        )
+
+        path = self.write_yaml(
+            "primary_platform:\n"
+            "  adapter: echotik\n"
+            "  categories:\n"
+            "    - path: [Home, Kitchen]\n"
+            '      id: "123456"\n'
+            "  options:\n"
+            "    tags: !!set {sale: null, seasonal: null}\n"
+        )
+        loaded = RuntimeConfig.load(path)
+        self.assertEqual(
+            loaded.primary_platform.options["tags"],
+            frozenset({"sale", "seasonal"}),
+        )
+
     def test_relative_paths_resolve_from_the_configuration_directory(self) -> None:
         """A resolver change using the working directory would break this test."""
         config = RuntimeConfig.from_mapping(

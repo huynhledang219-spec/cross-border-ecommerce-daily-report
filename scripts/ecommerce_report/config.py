@@ -46,6 +46,8 @@ DEFAULT_AMAZON_CATEGORIES = (
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(item) for item in value)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     return value
