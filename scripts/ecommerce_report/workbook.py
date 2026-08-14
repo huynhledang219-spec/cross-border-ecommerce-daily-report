@@ -537,18 +537,17 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         for row in range(2, worksheet.max_row + 1):
             detail_cell = worksheet.cell(row, detail_column)
             detail_value = detail_cell.value
-            if detail_value not in (None, "") and not is_safe_detail_url(
-                detail_value
-            ):
-                raise ValueError("报表商品详情链接目标不安全")
-            if detail_cell.hyperlink is not None:
+            if detail_value not in (None, ""):
+                if not is_safe_detail_url(detail_value) or detail_cell.hyperlink is None:
+                    raise ValueError("报表商品详情链接目标不安全")
                 detail_target = detail_cell.hyperlink.target
                 if (
                     not is_safe_detail_url(detail_target)
-                    or not is_safe_detail_url(detail_value)
                     or detail_target != detail_value
                 ):
                     raise ValueError("报表商品详情链接目标不安全")
+            elif detail_cell.hyperlink is not None:
+                raise ValueError("报表商品详情链接目标不安全")
         populated_rows = [
             row
             for row in range(2, worksheet.max_row + 1)

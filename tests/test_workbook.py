@@ -578,7 +578,7 @@ class WorkbookExportTests(unittest.TestCase):
             workbook_module.verify_report(result, self.template_path)
 
     def test_verifier_requires_matching_external_detail_hyperlinks(self) -> None:
-        for case in ("internal", "missing", "mismatch"):
+        for case in ("internal", "missing", "absent", "mismatch"):
             with self.subTest(case=case):
                 result = self.write_fixture()
                 workbook = load_workbook(result)
@@ -589,6 +589,8 @@ class WorkbookExportTests(unittest.TestCase):
                     )
                 elif case == "missing":
                     worksheet["N3"].hyperlink = Hyperlink(ref="N3")
+                elif case == "absent":
+                    worksheet["N3"].hyperlink = None
                 else:
                     worksheet["N3"].value = "https://example.test/products/42"
                     worksheet["N3"].hyperlink = (
