@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Callable, TypeVar
 
 import pandas as pd
 
+from . import workbook as _workbook
 from .amazon import scrape_amazon
-from .browser import open_echotik_context
+from .browser import open_platform_context
 from .config import RuntimeConfig
-from .echotik import scrape_echotik
-from .workbook import write_report
+from .platforms import (
+    PlatformAdapterRegistry,
+    build_default_registry,
+    validate_normalized_records,
+)
 
 
 _T = TypeVar("_T")
@@ -41,11 +46,45 @@ def _at_stage(stage: str, operation: Callable[[], _T]) -> _T:
         raise PipelineError(stage, error) from error
 
 
-def run_pipeline(config: RuntimeConfig, output_path: Path) -> Path:
+def write_report(
+    records: pd.DataFrame,
+    output_path: Path,
+    template_path: Path,
+    *,
+    primary_source: str,
+) -> Path:
+    """Bridge to the platform-neutral workbook signature introduced in Task 5."""
+
+    if "primary_source" in inspect.signature(_workbook.write_report).parameters:
+        return _workbook.write_report(
+            records,
+            output_path,
+            template_path,
+            primary_source=primary_source,
+        )
+    legacy_records = records
+    if primary_source == "EchoTik":
+        legacy_records = records.copy()
+        legacy_records.loc[
+            legacy_records["source"] == primary_source, "source"
+        ] = "echotik"
+    return _workbook.write_report(legacy_records, output_path, template_path)
+
+
+def run_pipeline(
+    config: RuntimeConfig,
+    output_path: Path,
+    registry: PlatformAdapterRegistry | None = None,
+) -> Path:
     """Collect configured sources and export one template-preserving report."""
 
     config.validate()
     destination = RuntimeConfig.ensure_outside_skill(output_path, "output path")
+    active_registry = registry or build_default_registry()
+    adapter = active_registry.resolve(config.primary_platform.adapter)
+    adapter.validate_config(config.primary_platform)
+    primary_stage = f"{adapter.display_name}采集"
+
     session = _at_stage("启动浏览器", _playwright_session)
     context = None
     session_entered = False
@@ -55,10 +94,17 @@ def run_pipeline(config: RuntimeConfig, output_path: Path) -> Path:
         playwright = _at_stage("启动浏览器", session.__enter__)
         session_entered = True
         context = _at_stage(
-            "启动浏览器", lambda: open_echotik_context(playwright, config)
+            "启动浏览器", lambda: open_platform_context(playwright, config)
         )
-        echotik_records = _at_stage(
-            "EchoTik采集", lambda: scrape_echotik(context, config)
+        primary_records = _at_stage(
+            primary_stage,
+            lambda: adapter.collect(
+                context,
+                config.primary_platform,
+                detail_limit=config.detail_limit,
+                trend_days=config.trend_days,
+                pages_per_category=config.pages_per_category,
+            ),
         )
         amazon_records = _at_stage(
             "Amazon采集",
@@ -90,16 +136,29 @@ def run_pipeline(config: RuntimeConfig, output_path: Path) -> Path:
     if primary_error is not None:
         raise primary_error.with_traceback(primary_traceback)
 
-    if echotik_records.empty:
-        raise PipelineError("EchoTik采集", RuntimeError("未采集到任何 EchoTik 商品"))
+    if primary_records.empty:
+        raise PipelineError(
+            primary_stage,
+            RuntimeError(f"未采集到任何 {adapter.display_name} 商品"),
+        )
+    _at_stage(
+        primary_stage,
+        lambda: validate_normalized_records(primary_records, adapter.display_name),
+    )
     if amazon_records.empty:
-        raise PipelineError("Amazon采集", RuntimeError("未采集到任何 Amazon 商品"))
+        raise PipelineError(
+            "Amazon采集", RuntimeError("未采集到任何 Amazon 商品")
+        )
 
-    frames = [frame for frame in (echotik_records, amazon_records) if not frame.empty]
-    records = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    records = pd.concat((primary_records, amazon_records), ignore_index=True)
     return _at_stage(
         "导出报表",
-        lambda: write_report(records, destination, config.template_path),
+        lambda: write_report(
+            records,
+            destination,
+            config.template_path,
+            primary_source=adapter.display_name,
+        ),
     )
 
 

@@ -16,8 +16,14 @@ from openpyxl.chart import LineChart, Reference
 
 from scripts.ecommerce_report.config import RuntimeConfig
 from scripts.ecommerce_report import daily as daily_module
+from scripts.ecommerce_report import pipeline as pipeline_module
 from scripts.ecommerce_report.daily import failure_path_for, run_daily_job
 from scripts.ecommerce_report.pipeline import PipelineError, run_pipeline
+from scripts.ecommerce_report.platforms import (
+    PlatformAdapterRegistry,
+    PlatformCapabilities,
+    PrimaryPlatformConfig,
+)
 from scripts.ecommerce_report.workbook import REPORT_HEADERS
 from scripts.run_daily import main as run_daily_main
 from scripts.run_report import main as run_report_main
@@ -41,6 +47,73 @@ class _PlaywrightSession:
         if self.exit_error is not None:
             raise self.exit_error
         return None
+
+
+class _RecordingAdapter:
+    key = "marketpulse"
+    display_name = "MarketPulse"
+    capabilities = PlatformCapabilities(True, True, True, True)
+
+    def __init__(self, records: pd.DataFrame) -> None:
+        self.records = records
+        self.collect_calls: list[dict[str, object]] = []
+        self.collection_error: BaseException | None = None
+
+    def validate_config(self, config: PrimaryPlatformConfig) -> None:
+        if config.adapter != self.key or not config.categories:
+            raise ValueError("MarketPulse requires configured categories")
+
+    def collect(
+        self,
+        context,
+        config: PrimaryPlatformConfig,
+        *,
+        detail_limit: int,
+        trend_days: int,
+        pages_per_category: int,
+    ) -> pd.DataFrame:
+        self.collect_calls.append(
+            {
+                "context": context,
+                "config": config,
+                "detail_limit": detail_limit,
+                "trend_days": trend_days,
+                "pages_per_category": pages_per_category,
+            }
+        )
+        if self.collection_error is not None:
+            raise self.collection_error
+        return self.records
+
+
+def _complete_platform_dataframe(
+    source: str = "MarketPulse", count: int = 1
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "source": source,
+                "name": f"Product {index}",
+                "name_cn": f"Product CN {index}",
+                "category": "Home / Kitchen",
+                "price": 10.0,
+                "rating": 4.5,
+                "reviews": 100,
+                "gmv": 1000.0,
+                "gmv_7d": 700.0 - index,
+                "sold_7d": 70,
+                "videos": 7,
+                "creators": 3,
+                "detail_url": f"https://example.test/products/{index}",
+                "gmv_trend_7d": [100.0] * 7,
+            }
+            for index in range(count)
+        ]
+    )
+
+
+def _complete_amazon_dataframe() -> pd.DataFrame:
+    return pd.DataFrame([{"source": "Amazon", "name": "Amazon product"}])
 
 
 def _create_template(path: Path) -> None:
@@ -87,9 +160,119 @@ class PipelineTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def _marketpulse_config(self) -> RuntimeConfig:
+        return RuntimeConfig(
+            output_dir=self.config.output_dir,
+            profile_dir=self.config.profile_dir,
+            template_path=self.config.template_path,
+            detail_limit=20,
+            trend_days=7,
+            pages_per_category=4,
+            primary_platform=PrimaryPlatformConfig(
+                adapter="marketpulse",
+                categories=({"path": ["Home", "Kitchen"], "id": "42"},),
+            ),
+            amazon_categories=self.config.amazon_categories,
+        )
+
+    def test_pipeline_runs_registered_non_echotik_adapter(self) -> None:
+        adapter = _RecordingAdapter(_complete_platform_dataframe(count=21))
+        registry = PlatformAdapterRegistry((adapter,))
+        config = self._marketpulse_config()
+        browser_context = Mock()
+
+        with patch.object(
+            pipeline_module, "_playwright_session", return_value=_PlaywrightSession()
+        ), patch.object(
+            pipeline_module,
+            "open_platform_context",
+            return_value=browser_context,
+            create=True,
+        ), patch.object(
+            pipeline_module,
+            "scrape_amazon",
+            return_value=_complete_amazon_dataframe(),
+        ), patch.object(
+            pipeline_module, "write_report", return_value=self.output_path
+        ) as write_report_mock:
+            result = run_pipeline(config, self.output_path, registry=registry)
+
+        self.assertEqual(result, self.output_path)
+        self.assertEqual(len(adapter.collect_calls), 1)
+        self.assertEqual(adapter.collect_calls[0]["detail_limit"], 20)
+        self.assertEqual(adapter.collect_calls[0]["trend_days"], 7)
+        self.assertEqual(adapter.collect_calls[0]["pages_per_category"], 4)
+        self.assertEqual(
+            write_report_mock.call_args.kwargs["primary_source"], "MarketPulse"
+        )
+        browser_context.close.assert_called_once_with()
+
+    def test_non_echotik_collection_failure_uses_dynamic_stage(self) -> None:
+        adapter = _RecordingAdapter(_complete_platform_dataframe())
+        adapter.collection_error = RuntimeError("service unavailable")
+        registry = PlatformAdapterRegistry((adapter,))
+
+        with patch.object(
+            pipeline_module, "_playwright_session", return_value=_PlaywrightSession()
+        ), patch.object(
+            pipeline_module, "open_platform_context", return_value=Mock(), create=True
+        ), patch.object(pipeline_module, "scrape_amazon") as scrape_amazon:
+            with self.assertRaises(PipelineError) as raised:
+                run_pipeline(
+                    self._marketpulse_config(), self.output_path, registry=registry
+                )
+
+        self.assertEqual(raised.exception.stage, "MarketPulse采集")
+        self.assertEqual(str(raised.exception.error), "service unavailable")
+        scrape_amazon.assert_not_called()
+
+    def test_empty_non_echotik_records_stop_before_export(self) -> None:
+        adapter = _RecordingAdapter(pd.DataFrame())
+        registry = PlatformAdapterRegistry((adapter,))
+
+        with patch.object(
+            pipeline_module, "_playwright_session", return_value=_PlaywrightSession()
+        ), patch.object(
+            pipeline_module, "open_platform_context", return_value=Mock(), create=True
+        ), patch.object(
+            pipeline_module,
+            "scrape_amazon",
+            return_value=_complete_amazon_dataframe(),
+        ), patch.object(pipeline_module, "write_report") as write_report_mock:
+            with self.assertRaises(PipelineError) as raised:
+                run_pipeline(
+                    self._marketpulse_config(), self.output_path, registry=registry
+                )
+
+        self.assertEqual(raised.exception.stage, "MarketPulse采集")
+        write_report_mock.assert_not_called()
+
+    def test_invalid_normalized_records_stop_before_export(self) -> None:
+        adapter = _RecordingAdapter(
+            pd.DataFrame([{"source": "MarketPulse", "name": "Incomplete"}])
+        )
+        registry = PlatformAdapterRegistry((adapter,))
+
+        with patch.object(
+            pipeline_module, "_playwright_session", return_value=_PlaywrightSession()
+        ), patch.object(
+            pipeline_module, "open_platform_context", return_value=Mock(), create=True
+        ), patch.object(pipeline_module, "scrape_amazon") as scrape_amazon, patch.object(
+            pipeline_module, "write_report"
+        ) as write_report_mock:
+            with self.assertRaises(PipelineError) as raised:
+                run_pipeline(
+                    self._marketpulse_config(), self.output_path, registry=registry
+                )
+
+        self.assertEqual(raised.exception.stage, "MarketPulse采集")
+        self.assertIn("normalized product fields", str(raised.exception.error))
+        scrape_amazon.assert_called_once()
+        write_report_mock.assert_not_called()
+
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
-    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
-    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
+    @patch("scripts.ecommerce_report.pipeline.open_platform_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
     @patch(
         "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
@@ -107,25 +290,16 @@ class PipelineTests(unittest.TestCase):
         playwright_session.return_value = _PlaywrightSession()
         browser_context = Mock()
         open_context.return_value = browser_context
-        scrape_echotik.return_value = pd.DataFrame(
-            [
-                {
-                    "source": "echotik",
-                    "name": "empty trend",
-                    "gmv": 1000,
-                    "gmv_7d": 100,
-                    "detail_url": "/product/1",
-                },
-                {
-                    "source": "echotik",
-                    "name": "later trend",
-                    "gmv": 900,
-                    "gmv_7d": 90,
-                    "detail_url": "/product/2",
-                    "gmv_trend_7d": [1, 2, 3, 4, 5, 6, 7],
-                },
-            ]
-        )
+        echotik_records = _complete_platform_dataframe("EchoTik", count=2)
+        echotik_records.loc[0, "name"] = "empty trend"
+        echotik_records.loc[0, "gmv"] = 1000
+        echotik_records.loc[0, "gmv_7d"] = 100
+        echotik_records.at[0, "gmv_trend_7d"] = None
+        echotik_records.loc[1, "name"] = "later trend"
+        echotik_records.loc[1, "gmv"] = 900
+        echotik_records.loc[1, "gmv_7d"] = 90
+        echotik_records.at[1, "gmv_trend_7d"] = [1, 2, 3, 4, 5, 6, 7]
+        scrape_echotik.return_value = echotik_records
         scrape_amazon.return_value = pd.DataFrame(
             [{"source": "Amazon", "name": "Complete Amazon product title"}]
         )
@@ -160,8 +334,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(str(raised.exception.error), "enter failed")
 
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
-    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
-    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
+    @patch("scripts.ecommerce_report.pipeline.open_platform_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
     def test_close_failures_do_not_mask_an_echotik_collection_failure(
         self,
@@ -187,8 +361,8 @@ class PipelineTests(unittest.TestCase):
         scrape_amazon.assert_not_called()
 
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
-    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
-    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
+    @patch("scripts.ecommerce_report.pipeline.open_platform_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
     def test_playwright_exit_failure_is_labeled_as_browser_close(
         self,
@@ -213,8 +387,8 @@ class PipelineTests(unittest.TestCase):
 
     @patch("scripts.ecommerce_report.pipeline.write_report")
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
-    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
-    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
+    @patch("scripts.ecommerce_report.pipeline.open_platform_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
     def test_amazon_and_export_failures_keep_their_exact_stages(
         self,
@@ -236,9 +410,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(amazon_raised.exception.stage, "Amazon采集")
 
         scrape_amazon.side_effect = None
-        scrape_echotik.return_value = pd.DataFrame(
-            [{"source": "echotik", "name": "EchoTik item", "gmv_7d": 1}]
-        )
+        scrape_echotik.return_value = _complete_platform_dataframe("EchoTik")
         scrape_amazon.return_value = pd.DataFrame(
             [{"source": "Amazon", "name": "Amazon item"}]
         )
@@ -251,8 +423,8 @@ class PipelineTests(unittest.TestCase):
 
     @patch("scripts.ecommerce_report.pipeline.write_report")
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
-    @patch("scripts.ecommerce_report.pipeline.scrape_echotik")
-    @patch("scripts.ecommerce_report.pipeline.open_echotik_context")
+    @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
+    @patch("scripts.ecommerce_report.pipeline.open_platform_context")
     @patch("scripts.ecommerce_report.pipeline._playwright_session")
     def test_an_empty_required_source_never_exports_a_report(
         self,
@@ -265,7 +437,8 @@ class PipelineTests(unittest.TestCase):
         """Concatenating whichever source is nonempty would hide a failed required source."""
         playwright_session.return_value = _PlaywrightSession()
         open_context.return_value = Mock()
-        one_row = pd.DataFrame([{"source": "source", "name": "product"}])
+        primary_row = _complete_platform_dataframe("EchoTik")
+        amazon_row = _complete_amazon_dataframe()
 
         for empty_name, expected_stage in (
             ("echotik", "EchoTik采集"),
@@ -273,10 +446,10 @@ class PipelineTests(unittest.TestCase):
         ):
             with self.subTest(empty_name=empty_name):
                 scrape_echotik.return_value = (
-                    pd.DataFrame() if empty_name == "echotik" else one_row
+                    pd.DataFrame() if empty_name == "echotik" else primary_row
                 )
                 scrape_amazon.return_value = (
-                    pd.DataFrame() if empty_name == "amazon" else one_row
+                    pd.DataFrame() if empty_name == "amazon" else amazon_row
                 )
 
                 with self.assertRaises(PipelineError) as raised:
