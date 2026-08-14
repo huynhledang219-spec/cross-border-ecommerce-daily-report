@@ -1,6 +1,6 @@
 # Configuration
 
-## New Windows computer
+## Local runtime on Windows
 
 Use Windows PowerShell, Python 3.12 or newer, and Google Chrome. The packaged code directly imports only the libraries in `scripts/requirements.txt`.
 
@@ -12,9 +12,9 @@ python -m pip install -r ".\scripts\requirements.txt"
 python -m playwright install chrome
 ```
 
-These commands install software; do not run them merely to inspect or verify the Skill.
+These commands install software. Do not run them merely to inspect or validate the Skill.
 
-Create the local runtime outside the Skill directory:
+Create the runtime outside the Skill directory:
 
 ```powershell
 $reportRuntime = Join-Path $env:LOCALAPPDATA "CrossBorderEcommerceDailyReport"
@@ -23,29 +23,46 @@ $reportConfig = Join-Path $reportRuntime "config.yaml"
 Copy-Item -LiteralPath ".\scripts\config.example.yaml" -Destination $reportConfig
 ```
 
-In the local copy, set `output_dir` and `profile_dir` to locations under `$reportRuntime`, and set `template_path` to the absolute path of the packaged, sanitized `assets/report-template.xlsx`. Use forward slashes in absolute YAML paths on Windows. Keep `detail_limit: 20`, `trend_days: 7`, and the default pet-category mappings.
+In the local copy, set `output_dir` and `profile_dir` under `$reportRuntime`. Set `template_path` to the absolute path of the packaged, sanitized `assets/report-template.xlsx`. Use forward slashes in absolute YAML paths on Windows. Keep `detail_limit: 20` and `trend_days: 7`.
 
-Account credentials, cookies, and the persistent Chrome profile are local runtime state. Never copy, publish, commit, or bundle them with the Skill. Never reuse the maintainer's profile.
+Local configuration, credentials, cookies, persistent browser profiles, generated reports, and failure records must remain outside the Skill directory and outside Git. Never copy or publish another person's profile.
 
-## First manual login and run
+## Primary platform selection
 
-From the Skill root, run:
+`primary_platform.adapter` is a closed adapter key resolved from the internal registry. Configuration never imports an executable path or remote code. The bundled registry currently provides `echotik`, which remains the default when the adapter is omitted.
+
+```yaml
+primary_platform:
+  adapter: echotik
+  categories:
+    - path: ["宠物用品", "猫狗配件", "猫狗清洁美容"]
+      id: "816392"
+  options: {}
+```
+
+Each registered adapter owns the schema and validation of `categories` and `options`. Unknown keys, unsupported options, missing capabilities, invalid categories, and arbitrary module paths fail closed before browser collection or workbook export.
+
+Amazon is not a replacement adapter. It remains a required supplementary source configured through `amazon_categories`, and every category URL must use HTTPS.
+
+## First visible login and manual run
+
+Run from the Skill root:
 
 ```powershell
 python ".\scripts\run_report.py" --config "$reportConfig"
 ```
 
-Chrome opens visibly with the configured persistent profile. Let the user enter EchoTik credentials manually. Do not request, record, paste, or automate credentials. If the first run proceeds before login is complete and fails, finish the login, then rerun the same command; the local profile retains the session.
+Chrome opens visibly with the configured persistent profile. Let the user enter platform credentials manually. Do not request, record, paste, store, or automate credentials. If the first run starts before sign-in is complete, finish sign-in manually and rerun the same command; the local profile retains the session.
 
-If EchoTik or Amazon displays a CAPTCHA, login challenge, or human-verification page, stop. Do not bypass it and do not continue to other product-detail pages. Resume only after the user completes it manually in the visible browser and explicitly requests a retry.
+Human verification is a hard stop. If the primary platform or Amazon displays a CAPTCHA, login challenge, or human-verification page, do not bypass it and do not continue to another product-detail page. Resume only after the user completes it manually and explicitly requests a retry.
 
-For an idempotent daily run after the manual run passes:
+After the manual run passes, use the idempotent daily entry point:
 
 ```powershell
 python ".\scripts\run_daily.py" --config "$reportConfig"
 ```
 
-The daily entry point reuses an existing report for the same date, permits retry after failure, and writes a concise sanitized failure record under `数据报表_失败原因`.
+The daily entry point reuses an existing report for the same date, permits retry after failure, and writes a concise sanitized failure record to the configured failure location.
 
 Register the 09:00 Windows scheduled task only when requested and only after the manual run and workbook verification pass:
 
@@ -53,33 +70,47 @@ Register the 09:00 Windows scheduled task only when requested and only after the
 powershell -ExecutionPolicy Bypass -File ".\scripts\install_scheduled_task.ps1" -ConfigPath "$reportConfig"
 ```
 
-## Category configuration
+## Change an EchoTik category
 
-The bundled example defaults to two matching pet segments:
+The bundled example contains two pet segments:
 
-- EchoTik: `宠物用品 > 猫狗配件 > 猫狗清洁美容` (`816392`) and `宠物用品 > 猫狗配件 > 猫狗服饰` (`813960`).
-- Amazon: Pet Grooming Supplies and Pet Clothing & Accessories over HTTPS.
+- `宠物用品 > 猫狗配件 > 猫狗清洁美容` (`816392`)
+- `宠物用品 > 猫狗配件 > 猫狗服饰` (`813960`)
 
-When the user asks for a different product category, they only need to provide its natural-language name. The Agent must do the discovery:
+To configure another EchoTik category:
 
-1. Open `https://echotik.live/products` in a visible Chrome window with the user's local session.
-2. Navigate the complete visible menu hierarchy. Record the exact labels in root-to-leaf order.
-3. Click the leaf and confirm the visible selected category matches the requested product type.
-4. Read the numeric `product_categories` value from the resulting page URL and bind it to that exact full path. If the page does not prove both path and ID, stop without editing.
-5. Open Amazon visibly. Choose an HTTPS Amazon category/search URL and confirm the displayed title/results represent the same requested product type. If the match is ambiguous, stop without editing.
-6. Edit only the local `config.yaml`, replacing both lists as a coherent pair. Each `echotik_categories` entry contains the exact root-to-leaf `path` list and quoted numeric `id`; each `amazon_categories` entry contains the matching `name` and confirmed HTTPS `url`. Preserve this existing YAML shape and replace only values proven by the visible pages.
-
-7. Load the local config before scraping to check its constraints:
+1. Open `https://echotik.live/products` in visible Chrome with the user's local session.
+2. Navigate the complete category hierarchy and record the exact root-to-leaf labels.
+3. Select the leaf and confirm that the visible selection matches the requested product type.
+4. Read the numeric `product_categories` value from the resulting URL and bind it to that exact path. Stop without editing if the page does not prove both values.
+5. Open Amazon visibly and confirm an HTTPS category or search page whose displayed results represent the same product type.
+6. Edit only the local `config.yaml`, replacing the primary-platform and Amazon category lists as a coherent pair.
+7. Load the local configuration before scraping:
 
    ```powershell
    python -c "from pathlib import Path; from scripts.ecommerce_report.config import RuntimeConfig; RuntimeConfig.load(Path(r'$reportConfig')); print('configuration valid')"
    ```
 
-Do not guess an ID, copy one from a similar category, derive it from a label, or skip the matching Amazon confirmation. Deadline, authority, or convenience never replaces visible evidence. Leave the pet defaults and local config unchanged until every confirmation succeeds.
+Never guess an identifier, copy one from a similar category, derive it from a translated label, or skip Amazon confirmation. Leave the existing local configuration unchanged until every visible confirmation succeeds.
+
+## Register a replacement platform
+
+Naming a website does not make it compatible. Treat platform replacement as an implementation and validation task:
+
+1. Check the internal registry for a local registered adapter.
+2. If none exists, implement a dedicated adapter that produces the normalized record contract in [report-schema.md](report-schema.md). Keep platform-specific selectors, authentication-state checks, pagination, category evidence, number parsing, detail navigation, and trend extraction inside that adapter.
+3. Declare and test all required capabilities: visible category confirmation, seven-day GMV, exact daily sales-amount trends, and human-verification detection.
+4. Prove that Top-20 identities are frozen before detail visits and that no more than 20 detail pages open.
+5. Run the equivalent-capability gate with unit tests and one user-authorized visible manual run.
+6. Generate and verify a report using the same workbook contract as EchoTik.
+7. Change only the local `primary_platform.adapter`, categories, and options after every gate passes.
+
+Do not estimate missing fields, substitute a different trend, treat challenge pages as empty data, or claim compatibility without the registered adapter and evidence.
 
 ## Failure handling
 
-- Configuration rejects limits other than exactly 20 details and 7 trend days, empty category lists, nonnumeric EchoTik IDs, and non-HTTPS Amazon URLs.
-- Summarize a run failure as: `stage — concise sanitized reason — failure record path`.
+- Reject limits other than exactly 20 detail pages and 7 trend days.
+- Reject an empty required source, an unknown adapter, incomplete capabilities, invalid platform categories, and non-HTTPS Amazon URLs.
+- Summarize a run failure as `stage — concise sanitized reason — failure record path`.
 - Treat a missing or unreadable failure record as an additional verification failure; do not invent a reason.
-- Keep full tracebacks in private debugging output only when the user explicitly asks and after redacting secrets and local profile paths.
+- Keep detailed traces private and redact secrets and local profile paths before sharing them.

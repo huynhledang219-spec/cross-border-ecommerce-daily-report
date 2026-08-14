@@ -6,8 +6,10 @@ detail_limit: 20
 trend_days: 7
 pages_per_category: 10
 
+# EchoTik is the default registered product-intelligence platform.
 # Sign in manually in the isolated browser profile the first time Chrome opens.
-# Before adding a category, an Agent must confirm its full path and ID on a visible EchoTik page.
+# A replacement requires a tested registered adapter and the equivalent-capability gate.
+# Before adding an EchoTik category, confirm its full path and ID on a visible page.
 primary_platform:
   adapter: echotik
   categories:
@@ -17,7 +19,7 @@ primary_platform:
       id: "813960"
   options: {}
 
-# Before adding a category, an Agent must confirm the Amazon URL.
+# Amazon remains a required supplementary source. Confirm every category URL visibly.
 amazon_categories:
   - name: Pet Grooming Supplies
     url: https://www.amazon.com/s?k=pet+grooming+supplies&i=pets

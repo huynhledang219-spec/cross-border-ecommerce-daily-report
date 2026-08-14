@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import posixpath
+import re
 import unittest
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -10,6 +11,7 @@ from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 import pandas as pd
+import yaml
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
@@ -452,6 +454,70 @@ class PublicWorkbookAssetTests(unittest.TestCase):
                 )
             finally:
                 workbook.close()
+
+
+class PublicSkillGuidanceTests(unittest.TestCase):
+    def test_public_guidance_documents_default_and_replaceable_platform(self) -> None:
+        skill = (REPOSITORY_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        config_reference = (
+            REPOSITORY_ROOT / "references" / "configuration.md"
+        ).read_text(encoding="utf-8")
+        report_schema = (
+            REPOSITORY_ROOT / "references" / "report-schema.md"
+        ).read_text(encoding="utf-8")
+        config_example = (
+            REPOSITORY_ROOT / "scripts" / "config.example.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("EchoTik remains the default", skill)
+        self.assertIn("Amazon remains a required supplementary source", skill)
+        self.assertIn("equivalent-capability gate", skill)
+        self.assertIn("Naming a website does not make it compatible", skill)
+        self.assertIn("registered adapter", config_reference)
+        self.assertIn("closed adapter key", config_reference)
+        self.assertIn("never imports an executable path or remote code", config_reference)
+        self.assertIn("Human verification", config_reference)
+        self.assertIn("normalized record contract", report_schema)
+        self.assertIn("unchanged across registered adapters", report_schema)
+        self.assertIn("primary_platform:", config_example)
+        self.assertIn("adapter: echotik", config_example)
+        self.assertNotIn("README.md", {path.name for path in REPOSITORY_ROOT.iterdir()})
+
+    def test_skill_frontmatter_uses_the_approved_platform_aware_trigger(self) -> None:
+        skill = (REPOSITORY_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        expected = (
+            "---\n"
+            "name: cross-border-ecommerce-daily-report\n"
+            "description: Use when configuring, running, scheduling, troubleshooting, or "
+            "validating a Windows daily product-intelligence report that uses EchoTik by "
+            "default or a verified registered platform adapter, with Amazon as a "
+            "supplementary source.\n"
+            "---"
+        )
+        self.assertTrue(skill.startswith(expected))
+
+    def test_openai_metadata_is_fully_english_and_exact(self) -> None:
+        metadata = yaml.safe_load(
+            (REPOSITORY_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        )
+        serialized = yaml.safe_dump(metadata, allow_unicode=True)
+        self.assertIsNone(re.search(r"[\u3400-\u9fff]", serialized))
+        self.assertEqual(
+            metadata,
+            {
+                "interface": {
+                    "display_name": "Cross-Border E-Commerce Daily Report",
+                    "short_description": (
+                        "Generate validated multi-source product-intelligence reports"
+                    ),
+                    "default_prompt": (
+                        "Use $cross-border-ecommerce-daily-report to configure, generate, "
+                        "and verify today's cross-border e-commerce product-intelligence "
+                        "report."
+                    ),
+                }
+            },
+        )
 
 
 if __name__ == "__main__":

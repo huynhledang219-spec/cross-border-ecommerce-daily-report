@@ -1,4 +1,4 @@
 interface:
-  display_name: "跨境电商每日数据报表"
-  short_description: "生成 Amazon 与 EchoTik 每日选品报表"
-  default_prompt: "Use $cross-border-ecommerce-daily-report to generate and verify today's cross-border ecommerce report."
+  display_name: "Cross-Border E-Commerce Daily Report"
+  short_description: "Generate validated multi-source product-intelligence reports"
+  default_prompt: "Use $cross-border-ecommerce-daily-report to configure, generate, and verify today's cross-border e-commerce product-intelligence report."
