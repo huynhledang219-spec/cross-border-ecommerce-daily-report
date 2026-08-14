@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import pandas as pd
 
@@ -187,9 +187,122 @@ def _select_category(page, path: tuple[str, ...], category_id: str) -> None:
         raise RuntimeError("类目筛选未生效")
 
 
-def _has_human_verification(page) -> bool:
-    page_text = page.locator("body").inner_text()
-    return "真人验证" in page_text or "请完成验证" in page_text
+_CHALLENGE_TEXT_MARKERS = (
+    "真人验证",
+    "请完成验证",
+    "人机验证",
+    "安全验证",
+    "验证码",
+    "verify you are human",
+    "verification required",
+    "complete the captcha",
+    "enter the characters you see",
+    "are you a robot",
+    "i am human",
+    "security check",
+    "security challenge",
+    "sign in to continue",
+    "log in to continue",
+    "please sign in",
+    "please log in",
+    "account login",
+    "请登录",
+    "登录后继续",
+    "账户登录",
+)
+_CHALLENGE_URL_MARKERS = (
+    "/login",
+    "/signin",
+    "/sign-in",
+    "/auth/",
+    "/passport/",
+    "/captcha",
+    "/challenge",
+    "/verification",
+)
+_CHALLENGE_FRAME_MARKERS = (
+    "recaptcha",
+    "hcaptcha",
+    "challenges.cloudflare.com",
+    "challenge-platform",
+    "arkoselabs",
+    "funcaptcha",
+    "geetest",
+)
+
+
+def _human_verification_signal(page) -> str | None:
+    try:
+        current_url = str(page.url or "")
+        parsed_url = urlparse(current_url)
+        url_path = parsed_url.path.casefold()
+        if any(marker in url_path for marker in _CHALLENGE_URL_MARKERS):
+            return f"challenge URL: {parsed_url.path}"
+
+        page_text = page.locator("body").inner_text().casefold()
+        if any(marker.casefold() in page_text for marker in _CHALLENGE_TEXT_MARKERS):
+            return "challenge text"
+
+        for frame in page.frames:
+            frame_url = str(frame.url or "").casefold()
+            if any(marker in frame_url for marker in _CHALLENGE_FRAME_MARKERS):
+                return "challenge frame"
+    except Exception as error:
+        raise RuntimeError("EchoTik 无法确认页面是否存在人工验证") from error
+    return None
+
+
+def _raise_if_human_verification(page, *, detail_stage: bool = False) -> None:
+    if _human_verification_signal(page) is None:
+        return
+    if detail_stage:
+        raise RuntimeError("EchoTik 出现人工验证，已停止继续打开商品页面")
+    raise RuntimeError("EchoTik 出现人工验证，已停止采集")
+
+
+def _normalize_detail_url(
+    detail_url: str | None, listing_url: str
+) -> str | None:
+    if detail_url is None or not str(detail_url).strip():
+        return None
+    raw_url = str(detail_url).strip()
+    if any(character.isspace() for character in raw_url):
+        raise RuntimeError("EchoTik 商品详情链接不安全")
+    try:
+        raw_parsed = urlparse(raw_url)
+        raw_parsed.port
+        if raw_parsed.scheme and (
+            raw_parsed.scheme.lower() not in {"http", "https"}
+            or not raw_parsed.hostname
+        ):
+            raise ValueError("unsafe absolute URL")
+        trusted = urlparse(listing_url)
+        trusted.port
+        resolved = urljoin(listing_url, raw_url)
+        parsed = urlparse(resolved)
+        parsed.port
+    except ValueError as error:
+        raise RuntimeError("EchoTik 商品详情链接不安全") from error
+    if (
+        trusted.scheme.lower() not in {"http", "https"}
+        or not trusted.hostname
+        or parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or (
+            parsed.scheme.lower(),
+            parsed.hostname.casefold(),
+            parsed.port,
+        )
+        != (
+            trusted.scheme.lower(),
+            trusted.hostname.casefold(),
+            trusted.port,
+        )
+    ):
+        raise RuntimeError("EchoTik 商品详情链接不安全")
+    return resolved
 
 
 def scrape_echotik(
@@ -217,25 +330,30 @@ def scrape_echotik(
     page = context.new_page()
     try:
         for category in categories:
+            if page.url:
+                _raise_if_human_verification(page)
             page.goto(
                 "https://echotik.live/products",
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
             _wait(page, "navigation")
-            if _has_human_verification(page):
-                raise RuntimeError("EchoTik 出现人工验证，已停止采集")
+            _raise_if_human_verification(page)
             try:
                 _dismiss_promotion_modal(page)
                 _set_bulk_translation(page, False)
                 _select_category(page, category.path, category.category_id)
             except Exception as error:
+                _raise_if_human_verification(page)
                 visible_path = " > ".join(category.path)
                 raise RuntimeError(
                     f"无法在 EchoTik 页面确认类目：{visible_path}"
                 ) from error
+            _raise_if_human_verification(page)
 
             for page_number in range(1, active_pages_per_category + 1):
+                _raise_if_human_verification(page)
+                listing_url = page.url
                 _dismiss_promotion_modal(page)
                 _set_bulk_translation(page, False)
                 rows = page.locator("tr")
@@ -282,19 +400,24 @@ def scrape_echotik(
                         continue
                     item = parse_echotik_row(cells, product_name, translated_name)
                     item["category"] = category.path[-1]
-                    item["detail_url"] = detail_url
+                    item["detail_url"] = _normalize_detail_url(
+                        detail_url, listing_url
+                    )
                     products.append(item)
                     added += 1
 
                 if page_number == active_pages_per_category or added == 0:
                     break
+                _raise_if_human_verification(page)
                 try:
                     page.get_by_text(str(page_number + 1), exact=True).last.click(
                         timeout=10_000
                     )
                     _wait(page, "pagination")
                 except Exception:
+                    _raise_if_human_verification(page)
                     break
+                _raise_if_human_verification(page)
 
         for product in select_top_detail_rows(
             products, ECHOTIK_ADAPTER.display_name, active_detail_limit
@@ -303,15 +426,10 @@ def scrape_echotik(
             if not detail_url:
                 product["diagnostic"] = "数据为空"
                 continue
-            url = (
-                detail_url
-                if str(detail_url).startswith("http")
-                else f"https://echotik.live{detail_url}"
-            )
-            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            _raise_if_human_verification(page, detail_stage=True)
+            page.goto(detail_url, wait_until="domcontentloaded", timeout=30_000)
             _wait(page, "detail")
-            if _has_human_verification(page):
-                raise RuntimeError("EchoTik 出现人工验证，已停止继续打开商品页面")
+            _raise_if_human_verification(page, detail_stage=True)
             try:
                 product["gmv_trend_7d"] = read_7d_gmv_trend(page)
             except TrendDataEmpty:

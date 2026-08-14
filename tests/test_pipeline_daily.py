@@ -274,6 +274,28 @@ class PipelineTests(unittest.TestCase):
         scrape_amazon.assert_called_once()
         write_report_mock.assert_not_called()
 
+    def test_malformed_trend_stops_before_export_instead_of_becoming_data_empty(self) -> None:
+        records = _complete_platform_dataframe()
+        records.at[0, "gmv_trend_7d"] = [1, 2, 3, 4, 5, 6, float("nan")]
+        adapter = _RecordingAdapter(records)
+        registry = PlatformAdapterRegistry((adapter,))
+
+        with patch.object(
+            pipeline_module, "_playwright_session", return_value=_PlaywrightSession()
+        ), patch.object(
+            pipeline_module, "open_platform_context", return_value=Mock(), create=True
+        ), patch.object(
+            pipeline_module, "scrape_amazon", return_value=_complete_amazon_dataframe()
+        ), patch.object(pipeline_module, "write_report") as write_report_mock:
+            with self.assertRaises(PipelineError) as raised:
+                run_pipeline(
+                    self._marketpulse_config(), self.output_path, registry=registry
+                )
+
+        self.assertEqual(raised.exception.stage, "MarketPulse采集")
+        self.assertIn("exactly seven finite nonnegative", str(raised.exception.error))
+        write_report_mock.assert_not_called()
+
     @patch("scripts.ecommerce_report.pipeline.scrape_amazon")
     @patch("scripts.ecommerce_report.echotik.ECHOTIK_ADAPTER.collect")
     @patch("scripts.ecommerce_report.pipeline.open_platform_context")

@@ -19,9 +19,13 @@ from scripts.ecommerce_report.echotik import (
     parse_echotik_row,
     scrape_echotik,
 )
-from scripts.ecommerce_report.platforms import PrimaryPlatformConfig
+from scripts.ecommerce_report.platforms import (
+    PrimaryPlatformConfig,
+    validate_normalized_records,
+)
 from scripts.ecommerce_report.trends import (
     TrendDataEmpty,
+    TrendDataInvalid,
     read_7d_gmv_trend,
     select_top_detail_rows,
 )
@@ -156,6 +160,8 @@ class FakeTextTarget:
         category_id = self.page.category_ids_by_final_label.get(self.text)
         if category_id is not None:
             self.page.url = f"https://echotik.live/products?product_categories={category_id}"
+            if self.page.verification_after_category:
+                self.page.body_text = self.page.verification_after_category
 
 
 class FakeControl:
@@ -188,6 +194,10 @@ class FakeTitleList:
 
     def all_inner_texts(self) -> list[str]:
         key = "translated" if self.page.translation_enabled else "title"
+        if self.page.translation_enabled and self.page.pre_detail_challenge:
+            self.page.pre_detail_challenge_ready = True
+            if self.page.pre_detail_challenge == "login_url":
+                self.page.url = "https://echotik.live/sign-in"
         return [self.row[key]]
 
 
@@ -256,7 +266,17 @@ class FakeBody:
         self.page = page
 
     def inner_text(self) -> str:
+        if self.page.pre_detail_challenge_ready:
+            if self.page.pre_detail_challenge == "login":
+                return "Sign in to continue"
+            if self.page.pre_detail_challenge == "captcha":
+                return "Please complete the CAPTCHA"
         return self.page.body_text
+
+
+class FakeFrame:
+    def __init__(self, url: str) -> None:
+        self.url = url
 
 
 class FakeBars:
@@ -269,6 +289,9 @@ class FakeBars:
 
     def wait_for(self, **_: object) -> None:
         return None
+
+    def count(self) -> int:
+        return len(self.page.trend_values)
 
     def evaluate_all(self, script: str) -> list[float | None]:
         if "bars.slice(-7)" in script:
@@ -297,16 +320,25 @@ class FakeEchoTikPage:
         rows: list[dict],
         category_ids_by_final_label: dict[str, str],
         trend_values: list[float | None] | None = None,
-        verification_on_detail: bool = False,
-        verification_on_listing: bool = False,
+        verification_on_detail: bool | str = False,
+        verification_on_listing: bool | str = False,
+        verification_after_category: str | None = None,
+        pre_detail_challenge: str | None = None,
         missing_chart: bool = False,
         failing_control: str | None = None,
     ) -> None:
         self.rows = rows
         self.category_ids_by_final_label = category_ids_by_final_label
-        self.trend_values = trend_values or [1, 2, 3, 4, 5, 6, 7]
+        self.trend_values = (
+            [1, 2, 3, 4, 5, 6, 7]
+            if trend_values is None
+            else trend_values
+        )
         self.verification_on_detail = verification_on_detail
         self.verification_on_listing = verification_on_listing
+        self.verification_after_category = verification_after_category
+        self.pre_detail_challenge = pre_detail_challenge
+        self.pre_detail_challenge_ready = False
         self.missing_chart = missing_chart
         self.failing_control = failing_control
         self.url = ""
@@ -318,13 +350,30 @@ class FakeEchoTikPage:
         self.waits: list[int] = []
         self.closed = False
 
+    @property
+    def frames(self) -> list[FakeFrame]:
+        if (
+            self.pre_detail_challenge_ready
+            and self.pre_detail_challenge == "frame"
+        ):
+            return [FakeFrame("https://www.google.com/recaptcha/api2/anchor")]
+        return []
+
     def goto(self, url: str, **_: object) -> None:
         self.url = url
         self.navigations.append(url)
         if "/product/" in url and self.verification_on_detail:
-            self.body_text = "请完成验证"
+            self.body_text = (
+                "请完成验证"
+                if self.verification_on_detail is True
+                else str(self.verification_on_detail)
+            )
         elif "/products" in url and self.verification_on_listing:
-            self.body_text = "真人验证"
+            self.body_text = (
+                "真人验证"
+                if self.verification_on_listing is True
+                else str(self.verification_on_listing)
+            )
         else:
             self.body_text = ""
 
@@ -503,23 +552,31 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(values, [10.0, 20.12, 30.0, 40.0, 50.0, 60.0, 70.0])
         self.assertEqual(page.checked_controls, ["7 天", "销售额"])
 
-    def test_read_7d_gmv_trend_rejects_any_series_other_than_seven_nonnegative_values(self) -> None:
+    def test_read_7d_gmv_trend_treats_no_daily_bars_as_data_empty(self) -> None:
+        page = FakeEchoTikPage([], {}, trend_values=[])
+
+        with self.assertRaisesRegex(TrendDataEmpty, "数据为空"):
+            read_7d_gmv_trend(page)
+
+    def test_read_7d_gmv_trend_rejects_malformed_series_as_operational(self) -> None:
         for values in (
             [1, 2, 3, 4, 5, 6],
             [1, 2, 3, 4, 5, 6, 7, 8],
             [1, 2, 3, 4, 5, 6, None],
             [1, 2, 3, 4, 5, 6, -1],
             [1, 2, 3, 4, 5, 6, "not-a-number"],
+            [1, 2, 3, 4, 5, 6, float("nan")],
+            [1, 2, 3, 4, 5, 6, float("inf")],
         ):
             with self.subTest(values=values):
                 page = FakeEchoTikPage([], {}, trend_values=values)
                 try:
                     read_7d_gmv_trend(page)
                 except Exception as error:
-                    self.assertIs(type(error), TrendDataEmpty)
-                    self.assertEqual(str(error), "EchoTik 七天日销售额数据为空")
+                    self.assertIs(type(error), TrendDataInvalid)
+                    self.assertEqual(str(error), "EchoTik 七天日销售额数据无效")
                 else:
-                    self.fail("invalid seven-day trend was accepted")
+                    self.fail("malformed seven-day trend was accepted")
 
     def test_read_7d_gmv_trend_reports_a_missing_chart_as_an_operational_failure(self) -> None:
         page = FakeEchoTikPage([], {}, missing_chart=True)
@@ -636,7 +693,62 @@ class SourceAndTrendTests(unittest.TestCase):
         )
 
         self.assertEqual(frame["source"].tolist(), ["EchoTik"])
+        self.assertEqual(
+            frame["detail_url"].tolist(),
+            ["https://echotik.live/product/1"],
+        )
         self.assertEqual(frame["gmv_trend_7d"].tolist(), [[1, 2, 3, 4, 5, 6, 7]])
+        validate_normalized_records(frame, "EchoTik")
+
+    def test_echotik_adapter_rejects_unsafe_detail_urls(self) -> None:
+        config = PrimaryPlatformConfig(
+            adapter="echotik",
+            categories=({"path": ["Home", "Kitchen"], "id": "123456"},),
+        )
+        for unsafe_url in (
+            "javascript:alert(1)",
+            "https:///product/1",
+            "//attacker.example/product/1",
+            "https://user:password@echotik.live/product/1",
+        ):
+            with self.subTest(unsafe_url=unsafe_url):
+                row = echotik_row(1, 10.0)
+                row["href"] = unsafe_url
+                page = FakeEchoTikPage([row], {"Kitchen": "123456"})
+
+                with self.assertRaisesRegex(RuntimeError, "商品详情链接不安全"):
+                    ECHOTIK_ADAPTER.collect(
+                        FakeEchoTikContext(page),
+                        config,
+                        detail_limit=20,
+                        trend_days=7,
+                        pages_per_category=1,
+                    )
+
+                self.assertEqual(
+                    [url for url in page.navigations if "/product/" in url],
+                    [],
+                )
+
+    def test_echotik_adapter_does_not_convert_malformed_trends_to_data_empty(self) -> None:
+        page = FakeEchoTikPage(
+            [echotik_row(1, 10.0)],
+            {"Kitchen": "123456"},
+            trend_values=[1, 2, 3, 4, 5, 6, float("nan")],
+        )
+        config = PrimaryPlatformConfig(
+            adapter="echotik",
+            categories=({"path": ["Home", "Kitchen"], "id": "123456"},),
+        )
+
+        with self.assertRaisesRegex(TrendDataInvalid, "数据无效"):
+            ECHOTIK_ADAPTER.collect(
+                FakeEchoTikContext(page),
+                config,
+                detail_limit=20,
+                trend_days=7,
+                pages_per_category=1,
+            )
 
     def test_missing_url_in_frozen_top_twenty_is_data_empty_without_substitution(self) -> None:
         """Opening the next-ranked URL would make collection and workbook Top identities diverge."""
@@ -677,6 +789,42 @@ class SourceAndTrendTests(unittest.TestCase):
         self.assertEqual(1, len([url for url in page.navigations if "/product/" in url]))
         self.assertTrue(page.closed)
 
+    def test_echotik_stops_before_detail_navigation_for_preexisting_challenges(self) -> None:
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        for challenge in ("login_url", "captcha", "frame"):
+            with self.subTest(challenge=challenge):
+                page = FakeEchoTikPage(
+                    [echotik_row(1, 10.0)],
+                    {"Kitchen": category.category_id},
+                    pre_detail_challenge=challenge,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "EchoTik 出现人工验证"):
+                    scrape_echotik(
+                        FakeEchoTikContext(page), self.make_config((category,))
+                    )
+
+                self.assertEqual(
+                    [url for url in page.navigations if "/product/" in url],
+                    [],
+                )
+
+    def test_echotik_stops_after_english_challenge_on_detail_navigation(self) -> None:
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        page = FakeEchoTikPage(
+            [echotik_row(1, 10.0)],
+            {"Kitchen": category.category_id},
+            verification_on_detail="Verify you are human",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "EchoTik 出现人工验证"):
+            scrape_echotik(FakeEchoTikContext(page), self.make_config((category,)))
+
+        self.assertEqual(
+            [url for url in page.navigations if "/product/" in url],
+            ["https://echotik.live/product/1"],
+        )
+
     def test_echotik_only_converts_the_dedicated_empty_trend_exception(self) -> None:
         """Catching every ValueError would disguise selector and parser defects as empty data."""
         category = EchoTikCategory(("Home", "Kitchen"), "123456")
@@ -707,6 +855,26 @@ class SourceAndTrendTests(unittest.TestCase):
             scrape_echotik(FakeEchoTikContext(page), self.make_config((category,)))
 
         self.assertEqual(page.category_actions, [])
+
+    def test_echotik_category_challenge_stops_before_reading_products(self) -> None:
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        page = FakeEchoTikPage(
+            [echotik_row(1, 10.0)],
+            {"Kitchen": category.category_id},
+            verification_after_category="Security check: verify you are human",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "EchoTik 出现人工验证"):
+            scrape_echotik(FakeEchoTikContext(page), self.make_config((category,)))
+
+        self.assertEqual(
+            page.category_actions,
+            [("hover", "Home"), ("click", "Kitchen")],
+        )
+        self.assertEqual(
+            [url for url in page.navigations if "/product/" in url],
+            [],
+        )
 
 
 if __name__ == "__main__":

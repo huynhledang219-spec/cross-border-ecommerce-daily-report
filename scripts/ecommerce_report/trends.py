@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from math import isfinite
+from numbers import Real
+
 
 _EMPTY_TREND_MESSAGE = "EchoTik 七天日销售额数据为空"
 
 
 class TrendDataEmpty(ValueError):
     """The requested chart loaded, but did not contain one valid seven-day series."""
+
+
+class TrendDataInvalid(RuntimeError):
+    """The trend chart returned values that violate the verified data contract."""
 
 
 def read_7d_gmv_trend(page) -> list[float]:
@@ -24,6 +31,8 @@ def read_7d_gmv_trend(page) -> list[float]:
         raise RuntimeError("EchoTik 趋势控件操作失败") from error
     try:
         daily_bars = sales.locator("path[name='日销售额']")
+        if daily_bars.count() == 0:
+            raise TrendDataEmpty(_EMPTY_TREND_MESSAGE)
         daily_bars.first.wait_for(state="visible", timeout=15_000)
         values = daily_bars.evaluate_all(
             """bars => bars.map(node => {
@@ -38,16 +47,23 @@ def read_7d_gmv_trend(page) -> list[float]:
                 return null;
             })"""
         )
+    except TrendDataEmpty:
+        raise
     except Exception as error:
         raise RuntimeError("EchoTik 趋势数据 DOM 读取失败") from error
-    try:
-        if len(values) != 7 or any(
-            value is None or float(value) < 0 for value in values
-        ):
-            raise ValueError
-        return [round(float(value), 2) for value in values]
-    except (TypeError, ValueError) as error:
-        raise TrendDataEmpty(_EMPTY_TREND_MESSAGE) from error
+    if (
+        not isinstance(values, (list, tuple))
+        or len(values) != 7
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not isfinite(float(value))
+            or value < 0
+            for value in values
+        )
+    ):
+        raise TrendDataInvalid("EchoTik 七天日销售额数据无效")
+    return [round(float(value), 2) for value in values]
 
 
 def select_top_detail_rows(records, source: str, limit: int = 20) -> list[dict]:
