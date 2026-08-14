@@ -550,10 +550,23 @@ class PublicSkillGuidanceTests(unittest.TestCase):
         self.assertIn("Amazon remains a required supplementary source", skill)
         self.assertIn("equivalent-capability gate", skill)
         self.assertIn("Naming a website does not make it compatible", skill)
+        self.assertIn("build_default_registry()", skill)
         self.assertIn("registered adapter", config_reference)
         self.assertIn("closed adapter key", config_reference)
         self.assertIn("never imports an executable path or remote code", config_reference)
         self.assertIn("Human verification", config_reference)
+        self.assertIn("scripts/ecommerce_report/platforms.py", config_reference)
+        for adapter_contract_term in (
+            "key",
+            "display_name",
+            "PlatformCapabilities",
+            "validate_config",
+            "collect",
+            "normalized `pandas.DataFrame`",
+            "build_default_registry()",
+            "visible manual acceptance",
+        ):
+            self.assertIn(adapter_contract_term, config_reference)
         self.assertIn("normalized record contract", report_schema)
         self.assertIn("unchanged across registered adapters", report_schema)
         self.assertIn("primary_platform:", config_example)

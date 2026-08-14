@@ -107,6 +107,46 @@ Naming a website does not make it compatible. Treat platform replacement as an i
 
 Do not estimate missing fields, substitute a different trend, treat challenge pages as empty data, or claim compatibility without the registered adapter and evidence.
 
+### Local adapter registration seam
+
+Use `build_default_registry()` in `scripts/ecommerce_report/platforms.py` as the only concrete local registration seam. Runtime YAML selects an adapter's `key`; it does not import the adapter. Keep EchoTik's `ECHOTIK_ADAPTER` instance in the registry so `echotik` remains the default, and keep Amazon outside this registry as the required supplementary source.
+
+Use this illustrative, non-executable skeleton to define the contract before implementation:
+
+```text
+replacement adapter instance
+  key = stable lowercase registry key
+  display_name = human-readable source label
+  capabilities = PlatformCapabilities(
+    category_confirmation = proven,
+    seven_day_gmv = proven,
+    daily_sales_amount_trend = proven,
+    human_verification_detection = proven,
+  )
+
+  validate_config(primary_platform_config)
+    reject unknown options, incomplete categories, and unverified identifiers
+
+  collect(context, primary_platform_config, detail_limit, trend_days, pages_per_category)
+    confirm the visible category and human-verification state
+    freeze Top-20 identities before opening detail pages
+    return the normalized pandas.DataFrame required by report-schema.md
+
+build_default_registry()
+  return PlatformAdapterRegistry((ECHOTIK_ADAPTER, replacement_adapter))
+```
+
+Implement and accept the adapter in this order:
+
+1. Create a dedicated local module; define one adapter instance with `key`, `display_name`, and `PlatformCapabilities`.
+2. Implement `validate_config` with fail-closed validation for its category and option schema.
+3. Implement `collect` so it returns a normalized `pandas.DataFrame`, detects human verification, and preserves the 20-detail-page ceiling and exact seven-day trend contract.
+4. Import and register the instance explicitly inside `build_default_registry()`; do not accept module names, file paths, entry points, plugins, or remote code from configuration.
+5. Add registry, configuration, normalized-record, capability, Top-20, challenge, and workbook integration tests.
+6. Complete visible manual acceptance for category evidence, seven-day GMV, seven daily sales-amount values, challenge handling, and the generated workbook before changing local configuration or scheduling.
+
+Registration makes the adapter selectable; it does not prove compatibility. Declare the adapter supported only after the equivalent-capability gate and visible manual acceptance both pass.
+
 ## Failure handling
 
 - Reject limits other than exactly 20 detail pages and 7 trend days.

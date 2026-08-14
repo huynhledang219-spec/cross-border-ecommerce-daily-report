@@ -40,6 +40,8 @@ Never guess, translate, infer, or reuse a category identifier from memory. Never
 
 Naming a website does not make it compatible. A replacement requires a local registered adapter, the normalized record contract, a complete capability declaration, adapter tests, visible category confirmation, exact seven-day GMV and seven-value sales-amount trend support, human-verification detection, and one user-authorized visible manual run.
 
+Use `build_default_registry()` in `scripts/ecommerce_report/platforms.py` as the local registration seam. Follow the non-executable adapter skeleton and acceptance steps in [references/configuration.md](references/configuration.md); never put an import path or adapter implementation in YAML.
+
 Apply the equivalent-capability gate before editing local configuration:
 
 1. Resolve an existing adapter by its closed registry key, or implement and register a dedicated local adapter.
