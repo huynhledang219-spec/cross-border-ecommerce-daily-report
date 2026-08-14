@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 from .config import RuntimeConfig
+from .platforms import PlatformCapabilities, PrimaryPlatformConfig
 from .trends import TrendDataEmpty, read_7d_gmv_trend, select_top_detail_rows
 
 
@@ -15,6 +16,30 @@ _WAIT_DURATIONS = {
     "pagination": 3_000,
     "detail": 5_000,
 }
+
+
+class EchoTikAdapter:
+    key = "echotik"
+    display_name = "EchoTik"
+    capabilities = PlatformCapabilities(True, True, True, True)
+
+    def validate_config(self, config: PrimaryPlatformConfig) -> None:
+        if config.adapter != self.key:
+            raise ValueError("EchoTik adapter requires the echotik key")
+
+    def collect(
+        self,
+        context,
+        config: PrimaryPlatformConfig,
+        *,
+        detail_limit: int,
+        trend_days: int,
+        pages_per_category: int,
+    ) -> pd.DataFrame:
+        raise RuntimeError("EchoTik adapter collection has not been migrated yet")
+
+
+ECHOTIK_ADAPTER = EchoTikAdapter()
 
 
 def _wait(page, stage: str) -> None:

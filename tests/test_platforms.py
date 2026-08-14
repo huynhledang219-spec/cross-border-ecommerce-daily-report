@@ -8,6 +8,7 @@ from scripts.ecommerce_report.platforms import (
     PlatformAdapterRegistry,
     PlatformCapabilities,
     PrimaryPlatformConfig,
+    build_default_registry,
     validate_normalized_records,
 )
 
@@ -31,6 +32,13 @@ class FakeAdapter:
 
 
 class PlatformRegistryTests(unittest.TestCase):
+    def test_default_registry_resolves_echotik_with_complete_capabilities(self) -> None:
+        adapter = build_default_registry().resolve("echotik")
+
+        self.assertEqual(adapter.key, "echotik")
+        self.assertEqual(adapter.display_name, "EchoTik")
+        self.assertEqual(adapter.capabilities.missing_required(), ())
+
     def test_registry_resolves_only_registered_keys(self) -> None:
         registry = PlatformAdapterRegistry((FakeAdapter(),))
         self.assertEqual(registry.resolve("marketpulse").display_name, "MarketPulse")
