@@ -57,7 +57,7 @@ def create_synthetic_template(path: Path) -> None:
     workbook.close()
 
 
-def normalized_records() -> pd.DataFrame:
+def normalized_records(primary_source: str = "EchoTik") -> pd.DataFrame:
     records: list[dict] = [
         {
             "rank": "SKU",
@@ -71,7 +71,7 @@ def normalized_records() -> pd.DataFrame:
     records.extend(
         {
             "rank": index,
-            "source": "echotik",
+            "source": primary_source,
             "name": f"Echo product {index}",
             "name_cn": f"页面中文名 {index}",
             "price": 10 + index,
@@ -126,13 +126,13 @@ class WorkbookExportTests(unittest.TestCase):
         )
         return result
 
-    def test_orders_sources_and_places_echotik_top_twenty_by_seven_day_gmv(self) -> None:
+    def test_orders_sources_and_places_primary_top_twenty_by_seven_day_gmv(self) -> None:
         result = self.write_fixture()
         worksheet = load_workbook(result, data_only=False).active
 
         sources = [worksheet.cell(row, 3).value for row in range(2, 26)]
         self.assertEqual(sources[0], "你的库存")
-        self.assertEqual(sources[1:23], ["echotik"] * 22)
+        self.assertEqual(sources[1:23], ["EchoTik"] * 22)
         self.assertEqual(sources[23], "Amazon")
         self.assertEqual(
             [worksheet.cell(row, 10).value for row in range(3, 23)],
@@ -233,10 +233,10 @@ class WorkbookExportTests(unittest.TestCase):
 
         self.assertEqual(inspection.path, result)
         self.assertEqual(inspection.headers, tuple(REPORT_HEADERS))
-        self.assertEqual(inspection.source_order, ("你的库存", "echotik", "Amazon"))
+        self.assertEqual(inspection.source_order, ("你的库存", "EchoTik", "Amazon"))
         self.assertEqual(
             inspection.hidden_columns,
-            ("EchoTik详情链接", "趋势日1", "趋势日2", "趋势日3", "趋势日4", "趋势日5", "趋势日6", "趋势日7"),
+            ("商品详情链接", "趋势日1", "趋势日2", "趋势日3", "趋势日4", "趋势日5", "趋势日6", "趋势日7"),
         )
         self.assertEqual(inspection.chart_count, 19)
         self.assertEqual(
@@ -256,6 +256,62 @@ class WorkbookExportTests(unittest.TestCase):
             self.fail("verify_report is not implemented")
 
         self.assertEqual(inspection.path, result)
+
+    def test_report_ranks_configured_primary_source_and_keeps_amazon_last(self) -> None:
+        records = normalized_records(primary_source="MarketPulse")
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="包含每个重要细节的完整英文商品标题",
+        ):
+            result = write_report(
+                records,
+                self.output_path,
+                self.template_path,
+                primary_source="MarketPulse",
+            )
+
+        workbook = load_workbook(result, data_only=False)
+        try:
+            worksheet = workbook.active
+            self.assertEqual(
+                [worksheet.cell(row, 2).value for row in range(3, 23)],
+                [f"Top {position}" for position in range(1, 21)],
+            )
+            self.assertTrue(
+                all(
+                    worksheet.cell(row, 3).value == "MarketPulse"
+                    for row in range(3, 25)
+                )
+            )
+            self.assertEqual(worksheet.cell(25, 3).value, "Amazon")
+            self.assertEqual(worksheet.cell(1, 14).value, "商品详情链接")
+            self.assertTrue(worksheet.column_dimensions["N"].hidden)
+        finally:
+            workbook.close()
+        self.assertEqual(
+            workbook_module.verify_report(result, self.template_path).source_order,
+            ("你的库存", "MarketPulse", "Amazon"),
+        )
+
+    def test_verifier_rejects_top_rows_from_two_primary_sources(self) -> None:
+        records = normalized_records(primary_source="MarketPulse")
+        with patch(
+            "scripts.ecommerce_report.workbook.translate_amazon_title_to_chinese",
+            return_value="包含每个重要细节的完整英文商品标题",
+        ):
+            result = write_report(
+                records,
+                self.output_path,
+                self.template_path,
+                primary_source="MarketPulse",
+            )
+        workbook = load_workbook(result)
+        workbook.active["C4"] = "EchoTik"
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "primary platform source"):
+            workbook_module.verify_report(result, self.template_path)
 
     def test_verify_report_rejects_a_changed_public_header(self) -> None:
         """Relying on a readable XLSX alone would accept a broken column contract."""
@@ -424,7 +480,7 @@ class WorkbookExportTests(unittest.TestCase):
         records = pd.DataFrame(
             [
                 {
-                    "source": "echotik",
+                    "source": "EchoTik",
                     "name": "Contact user@example.com",
                     "name_cn": "敏感测试",
                     "gmv_7d": 1,
@@ -465,7 +521,7 @@ class WorkbookExportTests(unittest.TestCase):
         records = pd.DataFrame(
             [
                 {
-                    "source": "echotik",
+                    "source": "EchoTik",
                     "name": '=HYPERLINK("https://attacker.invalid","click")',
                     "name_cn": "=1+1",
                     "gmv_7d": 1,

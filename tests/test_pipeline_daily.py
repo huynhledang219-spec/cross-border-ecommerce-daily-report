@@ -17,6 +17,7 @@ from openpyxl.chart import LineChart, Reference
 from scripts.ecommerce_report.config import RuntimeConfig
 from scripts.ecommerce_report import daily as daily_module
 from scripts.ecommerce_report import pipeline as pipeline_module
+from scripts.ecommerce_report import workbook as workbook_module
 from scripts.ecommerce_report.daily import failure_path_for, run_daily_job
 from scripts.ecommerce_report.pipeline import PipelineError, run_pipeline
 from scripts.ecommerce_report.platforms import (
@@ -174,6 +175,9 @@ class PipelineTests(unittest.TestCase):
             ),
             amazon_categories=self.config.amazon_categories,
         )
+
+    def test_pipeline_uses_the_native_platform_neutral_workbook_writer(self) -> None:
+        self.assertIs(pipeline_module.write_report, workbook_module.write_report)
 
     def test_pipeline_runs_registered_non_echotik_adapter(self) -> None:
         adapter = _RecordingAdapter(_complete_platform_dataframe(count=21))

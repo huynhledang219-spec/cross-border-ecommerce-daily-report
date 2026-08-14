@@ -36,13 +36,14 @@ REPORT_HEADERS = [
     "7天销量",
     "关联视频",
     "关联达人",
-    "EchoTik详情链接",
+    "商品详情链接",
     "诊断",
 ]
 
 _HELPER_HEADERS = tuple(f"趋势日{day}" for day in range(1, 8))
 _DEFAULT_CHART_EXTENT = (3_513_455, 1_031_240)
-_SOURCE_PRIORITY = {"你的库存": 0, "echotik": 1, "Amazon": 2}
+_INVENTORY_SOURCE = "你的库存"
+_AMAZON_SOURCE = "Amazon"
 _SENSITIVE_REPORT_CONTENT = re.compile(
     r"(?ix)("
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
@@ -168,11 +169,27 @@ def _sensitive_archive_parts(path: Path) -> tuple[str, ...]:
     return tuple(flagged)
 
 
-def _prepare_records(records: pd.DataFrame) -> list[dict[str, Any]]:
+def _source_priority(source: str, primary_source: str) -> int:
+    priorities = {
+        _INVENTORY_SOURCE: 0,
+        primary_source: 1,
+        _AMAZON_SOURCE: 3,
+    }
+    return priorities.get(source, 2)
+
+
+def _prepare_records(
+    records: pd.DataFrame, primary_source: str
+) -> list[dict[str, Any]]:
+    primary_source = str(primary_source).strip()
+    if not primary_source or primary_source in {_INVENTORY_SOURCE, _AMAZON_SOURCE}:
+        raise ValueError("primary_source must identify a product-intelligence platform")
     prepared = [dict(record) for record in records.to_dict(orient="records")]
-    echotik = [record for record in prepared if record.get("source") == "echotik"]
+    primary_records = [
+        record for record in prepared if record.get("source") == primary_source
+    ]
     top_records = sorted(
-        echotik,
+        primary_records,
         key=lambda record: _number(record.get("gmv_7d")),
         reverse=True,
     )[:20]
@@ -182,7 +199,7 @@ def _prepare_records(records: pd.DataFrame) -> list[dict[str, Any]]:
         position = top_positions.get(id(record))
         record["_top_position"] = position
         record["近7天重点选品"] = f"Top {position}" if position else None
-        if record.get("source") == "Amazon":
+        if record.get("source") == _AMAZON_SOURCE:
             complete_title = " ".join(str(record.get("name") or "").split())
             record["name_cn"] = (
                 translate_amazon_title_to_chinese(complete_title)
@@ -192,12 +209,12 @@ def _prepare_records(records: pd.DataFrame) -> list[dict[str, Any]]:
 
     def sort_key(record: dict[str, Any]) -> tuple[float, float, float, float]:
         source = str(record.get("source") or "")
-        source_priority = float(_SOURCE_PRIORITY.get(source, len(_SOURCE_PRIORITY)))
+        source_priority = float(_source_priority(source, primary_source))
         top_position = record.get("_top_position")
         top_group = 0.0 if top_position else 1.0
         top_order = float(top_position or 999)
         total_gmv = -_number(record.get("gmv"))
-        if source != "echotik":
+        if source != primary_source:
             top_group = 0.0
             top_order = 0.0
         return source_priority, top_group, top_order, total_gmv
@@ -220,7 +237,7 @@ def _report_row(record: dict[str, Any]) -> dict[str, Any]:
         "7天销量": record.get("sold_7d"),
         "关联视频": record.get("videos"),
         "关联达人": record.get("creators"),
-        "EchoTik详情链接": record.get("detail_url"),
+        "商品详情链接": record.get("detail_url"),
         "诊断": record.get("diagnostic"),
     }
 
@@ -240,6 +257,8 @@ def write_report(
     records: pd.DataFrame,
     output_path: Path,
     template_path: Path,
+    *,
+    primary_source: str = "EchoTik",
 ) -> Path:
     """Write normalized records into a copy of an existing Excel template."""
 
@@ -254,7 +273,7 @@ def write_report(
         template_formulas = _formula_inventory(template_workbook)
     finally:
         template_workbook.close()
-    prepared = _prepare_records(records)
+    prepared = _prepare_records(records, primary_source)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(
         dir=output_path.parent,
@@ -304,7 +323,7 @@ def write_report(
                 for column, header in enumerate(REPORT_HEADERS, start=1):
                     _set_literal(worksheet.cell(output_row, column), values.get(header))
 
-            detail_column = REPORT_HEADERS.index("EchoTik详情链接") + 1
+            detail_column = REPORT_HEADERS.index("商品详情链接") + 1
             diagnostic_column = REPORT_HEADERS.index("诊断") + 1
             detail_letter = worksheet.cell(1, detail_column).column_letter
             worksheet.column_dimensions[detail_letter].hidden = True
@@ -446,20 +465,13 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
         raise ValueError("报表包含敏感账户或本地运行内容")
     if inspection.headers != tuple(REPORT_HEADERS):
         raise ValueError("报表表头不符合公开格式")
-    required_hidden = ("EchoTik详情链接",) + _HELPER_HEADERS
+    required_hidden = ("商品详情链接",) + _HELPER_HEADERS
     if inspection.hidden_columns != required_hidden:
         raise ValueError("报表隐藏列不符合公开格式")
     if inspection.formula_errors:
         raise ValueError("报表包含公式或公式错误")
     if any(extent != template_extent for extent in inspection.chart_extents):
         raise ValueError("报表图表尺寸与模板图表尺寸不一致")
-    if any(source not in _SOURCE_PRIORITY for source in inspection.source_order) or list(
-        inspection.source_order
-    ) != sorted(
-        inspection.source_order,
-        key=lambda source: _SOURCE_PRIORITY[source],
-    ):
-        raise ValueError("报表来源顺序无效")
     workbook = load_workbook(verified_path, data_only=False)
     try:
         worksheet = workbook.active
@@ -479,25 +491,56 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             for row in populated_rows
             if worksheet.cell(row, 3).value not in (None, "")
         ]
-        source_priorities = [_SOURCE_PRIORITY[source] for source in source_values]
-        if source_priorities != sorted(source_priorities):
-            raise ValueError("报表来源连续分组顺序无效")
         top_rows = [
             row
             for row in range(2, worksheet.max_row + 1)
             if worksheet.cell(row, 2).value not in (None, "")
         ]
+        non_reserved_sources = {
+            source
+            for source in source_values
+            if source not in {_INVENTORY_SOURCE, _AMAZON_SOURCE}
+        }
+        if top_rows:
+            top_sources = {
+                str(worksheet.cell(row, 3).value or "").strip() for row in top_rows
+            }
+            reserved_sources = {_INVENTORY_SOURCE, _AMAZON_SOURCE, ""}
+            if len(top_sources) != 1 or top_sources & reserved_sources:
+                raise ValueError("invalid primary platform source in Top rows")
+            primary_source = next(iter(top_sources))
+            if non_reserved_sources != {primary_source}:
+                raise ValueError("invalid primary platform source outside Top rows")
+        else:
+            if non_reserved_sources:
+                raise ValueError("primary platform source requires Top rows")
+            primary_source = ""
+        allowed_sources = {_INVENTORY_SOURCE, _AMAZON_SOURCE}
+        if primary_source:
+            allowed_sources.add(primary_source)
+        if any(source not in allowed_sources for source in inspection.source_order):
+            raise ValueError("报表来源顺序无效")
+        source_priorities = [
+            _source_priority(source, primary_source) for source in source_values
+        ]
+        if source_priorities != sorted(source_priorities):
+            raise ValueError("报表来源连续分组顺序无效")
+        if list(inspection.source_order) != sorted(
+            inspection.source_order,
+            key=lambda source: _source_priority(source, primary_source),
+        ):
+            raise ValueError("报表来源顺序无效")
         top_labels = [worksheet.cell(row, 2).value for row in top_rows]
         expected_labels = [f"Top {position}" for position in range(1, len(top_rows) + 1)]
         top_gmvs = [_number(worksheet.cell(row, 10).value) for row in top_rows]
         if (
             len(top_rows) > 20
             or top_labels != expected_labels
-            or any(worksheet.cell(row, 3).value != "echotik" for row in top_rows)
+            or any(worksheet.cell(row, 3).value != primary_source for row in top_rows)
             or any(value == -math.inf for value in top_gmvs)
             or top_gmvs != sorted(top_gmvs, reverse=True)
         ):
-            raise ValueError("EchoTik Top 20 标签或7天GMV顺序无效")
+            raise ValueError("Primary platform Top 20 标签或7天GMV顺序无效")
 
         chart_rows: list[int] = []
         for chart in worksheet._charts:
@@ -528,7 +571,7 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
             if has_chart == (diagnostic == "数据为空"):
                 raise ValueError("Top 20 行必须具有趋势图或数据为空诊断")
         for row in range(2, worksheet.max_row + 1):
-            if worksheet.cell(row, 3).value != "Amazon":
+            if worksheet.cell(row, 3).value != _AMAZON_SOURCE:
                 continue
             original_title = str(worksheet.cell(row, 4).value or "").strip()
             chinese_title = str(worksheet.cell(row, 5).value or "").strip()

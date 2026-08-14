@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from typing import Callable, TypeVar
 
 import pandas as pd
 
-from . import workbook as _workbook
 from .amazon import scrape_amazon
 from .browser import open_platform_context
 from .config import RuntimeConfig
@@ -17,6 +15,7 @@ from .platforms import (
     build_default_registry,
     validate_normalized_records,
 )
+from .workbook import write_report
 
 
 _T = TypeVar("_T")
@@ -44,31 +43,6 @@ def _at_stage(stage: str, operation: Callable[[], _T]) -> _T:
         raise
     except Exception as error:
         raise PipelineError(stage, error) from error
-
-
-def write_report(
-    records: pd.DataFrame,
-    output_path: Path,
-    template_path: Path,
-    *,
-    primary_source: str,
-) -> Path:
-    """Bridge to the platform-neutral workbook signature introduced in Task 5."""
-
-    if "primary_source" in inspect.signature(_workbook.write_report).parameters:
-        return _workbook.write_report(
-            records,
-            output_path,
-            template_path,
-            primary_source=primary_source,
-        )
-    legacy_records = records
-    if primary_source == "EchoTik":
-        legacy_records = records.copy()
-        legacy_records.loc[
-            legacy_records["source"] == primary_source, "source"
-        ] = "echotik"
-    return _workbook.write_report(legacy_records, output_path, template_path)
 
 
 def run_pipeline(

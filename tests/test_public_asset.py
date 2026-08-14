@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import posixpath
 import unittest
 import xml.etree.ElementTree as ET
@@ -31,7 +32,7 @@ APPROVED_HEADERS = (
     "7天销量",
     "关联视频",
     "关联达人",
-    "EchoTik详情链接",
+    "商品详情链接",
     "诊断",
 )
 EXPECTED_WIDTHS = (
@@ -93,6 +94,20 @@ EXPECTED_OVERRIDE_CONTENT_TYPES = {
     "/xl/workbook.xml": (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
     ),
+}
+EXPECTED_UNCHANGED_PART_HASHES = {
+    "[Content_Types].xml": "63cf0c3306f3bf41b32d5ce2f43b3e5eed98b2eee6acd6a57e1a6ee524527893",
+    "_rels/.rels": "c545941ba36c15fcdce4ae4568c663f3ced1a2226ad5082d3fd66b178bfac11a",
+    "docProps/app.xml": "209fca6b00afe72a5029754b94be5953d8f16d96f67130325566b9366ad4ccc5",
+    "docProps/core.xml": "185e39669d66701b6c580a68388bf4fee9eb5831bae3d95221739d42575b1ad0",
+    "xl/_rels/workbook.xml.rels": "26ad8fcc38d41229833e624496df364492772697ad2e5d6696e1738f05ba225f",
+    "xl/charts/chart1.xml": "cbec71313d8f59b369c05aba0146fafc9a63a9ae152be6cc15dc4653b1cb37c6",
+    "xl/drawings/_rels/drawing1.xml.rels": "74667459a717caf5ced763d00fd999c3b180fd96c5804b901a08b8ecd5795128",
+    "xl/drawings/drawing1.xml": "4fd8708453d71c978a6c8482e18c1271b3dbeb5ac37d22a035d654a0b1de6ccd",
+    "xl/styles.xml": "f88d0db65c1cb0cbdaff569b8b1cbe6e2083222727edd4d4296bbc14f71be5cc",
+    "xl/theme/theme1.xml": "a776ae573b94ab1d2aadb33fe62fd21dcae120ccd56d00139d58ff139040c6b3",
+    "xl/workbook.xml": "698333647b55bdf82e43fdb4530e49a358bad7542c081baa8db924cde02cfc34",
+    "xl/worksheets/_rels/sheet1.xml.rels": "0043881ca7f803da685c9fc201bc7c04f045356813c7b94a5d00253d3b5df9ee",
 }
 
 
@@ -160,6 +175,17 @@ def _header_style_is_approved(cell) -> bool:
 
 
 class PublicWorkbookAssetTests(unittest.TestCase):
+    def test_hidden_header_migration_preserves_every_other_zip_part_exactly(
+        self,
+    ) -> None:
+        _assert_asset_exists(self)
+        with ZipFile(ASSET_PATH) as archive:
+            actual = {
+                name: hashlib.sha256(archive.read(name)).hexdigest()
+                for name in EXPECTED_UNCHANGED_PART_HASHES
+            }
+        self.assertEqual(actual, EXPECTED_UNCHANGED_PART_HASHES)
+
     def test_preserves_the_actual_2026_8_11_layout_without_business_values(self) -> None:
         """The public asset must be a sanitized layout clone, not a header-only shell."""
 
@@ -396,7 +422,7 @@ class PublicWorkbookAssetTests(unittest.TestCase):
                 *[
                     {
                         "rank": index,
-                        "source": "echotik",
+                        "source": "EchoTik",
                         "name": f"Product {index}",
                         "name_cn": f"商品 {index}",
                         "price": 10.0 + index,
