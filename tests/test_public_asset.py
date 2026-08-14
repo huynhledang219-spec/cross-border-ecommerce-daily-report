@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+import subprocess
 import unittest
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -58,6 +59,14 @@ EXPECTED_WIDTHS = (
     52.9333333333333,
 )
 EXPECTED_CHART_EXTENT = (3_513_455, 1_031_240)
+PUBLIC_TEXT_SUFFIXES = frozenset({".md", ".yaml", ".yml", ".py", ".ps1", ".txt"})
+PRIVATE_ABSOLUTE_PATH_PATTERNS = (
+    re.compile(r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/]Users[\\/][^\\/\s\"'`]+"),
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/][^\r\n\"'`]*(?:workspace|worktrees?|工作目录)"
+    ),
+    re.compile(r"(?i)(?<![A-Za-z0-9])/(?:home|Users)/[^/\s\"'`]+/"),
+)
 EXPECTED_PARTS = frozenset(
     {
         "[Content_Types].xml",
@@ -457,6 +466,49 @@ class PublicWorkbookAssetTests(unittest.TestCase):
 
 
 class PublicSkillGuidanceTests(unittest.TestCase):
+    def test_tracked_public_text_has_no_literal_private_absolute_paths(self) -> None:
+        portable_examples = (
+            '$codexHome = $env:CODEX_HOME',
+            '$codexHome = Join-Path $HOME ".codex"',
+            'python (Join-Path $codexHome "skills/.system/skill-creator/scripts/quick_validate.py") "."',
+            'adapter: C:/temp/adapter.py',
+        )
+        self.assertFalse(
+            any(
+                pattern.search(example)
+                for example in portable_examples
+                for pattern in PRIVATE_ABSOLUTE_PATH_PATTERNS
+            ),
+            "portable environment-based path syntax was rejected",
+        )
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").split("\0")
+        findings: list[str] = []
+        for relative_name in tracked:
+            if not relative_name:
+                continue
+            relative_path = Path(relative_name)
+            # Test fixtures intentionally exercise sanitized, fictional profile paths.
+            if relative_path.parts[0] == "tests":
+                continue
+            if relative_path.suffix.lower() not in PUBLIC_TEXT_SUFFIXES:
+                continue
+            content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+            if any(pattern.search(content) for pattern in PRIVATE_ABSOLUTE_PATH_PATTERNS):
+                findings.append(relative_path.as_posix())
+
+        self.assertEqual(
+            findings,
+            [],
+            "tracked public text contains literal private absolute paths in: "
+            + ", ".join(findings),
+        )
+
     def test_public_guidance_documents_default_and_replaceable_platform(self) -> None:
         skill = (REPOSITORY_ROOT / "SKILL.md").read_text(encoding="utf-8")
         config_reference = (

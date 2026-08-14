@@ -729,7 +729,9 @@ Run:
 
 ```powershell
 python -m unittest tests.test_public_asset -v
-python "C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "."
+$codexHome = $env:CODEX_HOME
+if (-not $codexHome) { $codexHome = Join-Path $HOME ".codex" }
+python (Join-Path $codexHome "skills/.system/skill-creator/scripts/quick_validate.py") "."
 ```
 
 Expected: public documentation tests pass and quick validation reports a valid Skill.
@@ -777,7 +779,9 @@ Expected: exit code `0`.
 Run:
 
 ```powershell
-python "C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "."
+$codexHome = $env:CODEX_HOME
+if (-not $codexHome) { $codexHome = Join-Path $HOME ".codex" }
+python (Join-Path $codexHome "skills/.system/skill-creator/scripts/quick_validate.py") "."
 ```
 
 Expected: valid Skill output and exit code `0`.
