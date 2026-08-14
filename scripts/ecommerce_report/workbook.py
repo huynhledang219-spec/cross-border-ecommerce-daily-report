@@ -142,6 +142,30 @@ def _formula_inventory(workbook) -> frozenset[tuple[str, str, str]]:
     )
 
 
+def _has_content_beyond_helper_columns(worksheet) -> bool:
+    """Return true for real cell/drawing content after V, ignoring empty dimensions."""
+
+    if worksheet.max_column > 22:
+        for row in worksheet.iter_rows(
+            min_row=1,
+            max_row=worksheet.max_row,
+            min_col=23,
+            max_col=worksheet.max_column,
+        ):
+            for cell in row:
+                if (
+                    cell.value not in (None, "")
+                    or cell.hyperlink is not None
+                    or cell.comment is not None
+                ):
+                    return True
+    for drawing in (*worksheet._charts, *worksheet._images):
+        marker = getattr(getattr(drawing, "anchor", None), "_from", None)
+        if marker is not None and marker.col >= 22:
+            return True
+    return False
+
+
 def _sensitive_archive_parts(path: Path) -> tuple[str, ...]:
     flagged: list[str] = []
     with zipfile.ZipFile(path) as archive:
@@ -475,6 +499,8 @@ def verify_report(path: Path, template_path: Path | None = None) -> ReportInspec
     workbook = load_workbook(verified_path, data_only=False)
     try:
         worksheet = workbook.active
+        if _has_content_beyond_helper_columns(worksheet):
+            raise ValueError("报表在V列之后包含额外内容或图形")
         populated_rows = [
             row
             for row in range(2, worksheet.max_row + 1)

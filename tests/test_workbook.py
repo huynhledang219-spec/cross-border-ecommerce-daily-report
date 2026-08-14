@@ -405,6 +405,35 @@ class WorkbookExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "隐藏列"):
             workbook_module.verify_report(result, self.template_path)
 
+    def test_verify_report_rejects_visible_content_beyond_the_helper_columns(
+        self,
+    ) -> None:
+        """A populated W column must not escape the A:V workbook contract."""
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        workbook.active["W1"] = "unexpected visible report column"
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "V列之后"):
+            workbook_module.verify_report(result, self.template_path)
+
+    def test_verify_report_rejects_a_drawing_anchored_beyond_helper_columns(
+        self,
+    ) -> None:
+        result = self.write_fixture()
+        workbook = load_workbook(result)
+        worksheet = workbook.active
+        unexpected_chart = LineChart()
+        unexpected_chart.width = REFERENCE_CHART_EXTENT[0] / 360_000
+        unexpected_chart.height = REFERENCE_CHART_EXTENT[1] / 360_000
+        worksheet.add_chart(unexpected_chart, "W2")
+        workbook.save(result)
+        workbook.close()
+
+        with self.assertRaisesRegex(ValueError, "V列之后"):
+            workbook_module.verify_report(result, self.template_path)
+
     def test_verify_report_rejects_missing_or_visibly_truncated_amazon_translation(self) -> None:
         """A source row existing does not prove its promised complete Chinese title exists."""
         for invalid_translation in (None, "被截断的中文名称..."):
