@@ -141,6 +141,8 @@ class FakeSwitch:
 
     def click(self, **_: object) -> None:
         self.page.translation_enabled = not self.page.translation_enabled
+        if self.page.translation_enabled and self.page.verification_on_translation:
+            self.page.body_text = self.page.verification_on_translation
 
 
 class FakeTextTarget:
@@ -288,6 +290,11 @@ class FakeBars:
         return self
 
     def wait_for(self, **_: object) -> None:
+        if self.page.failing_bar_wait:
+            raise TimeoutError("daily bars did not become visible")
+        if self.page.delayed_trend_values is not None:
+            self.page.trend_values = self.page.delayed_trend_values
+            self.page.delayed_trend_values = None
         return None
 
     def count(self) -> int:
@@ -320,12 +327,15 @@ class FakeEchoTikPage:
         rows: list[dict],
         category_ids_by_final_label: dict[str, str],
         trend_values: list[float | None] | None = None,
+        delayed_trend_values: list[float | None] | None = None,
         verification_on_detail: bool | str = False,
         verification_on_listing: bool | str = False,
         verification_after_category: str | None = None,
+        verification_on_translation: str | None = None,
         pre_detail_challenge: str | None = None,
         missing_chart: bool = False,
         failing_control: str | None = None,
+        failing_bar_wait: bool = False,
     ) -> None:
         self.rows = rows
         self.category_ids_by_final_label = category_ids_by_final_label
@@ -337,10 +347,13 @@ class FakeEchoTikPage:
         self.verification_on_detail = verification_on_detail
         self.verification_on_listing = verification_on_listing
         self.verification_after_category = verification_after_category
+        self.verification_on_translation = verification_on_translation
         self.pre_detail_challenge = pre_detail_challenge
         self.pre_detail_challenge_ready = False
         self.missing_chart = missing_chart
         self.failing_control = failing_control
+        self.failing_bar_wait = failing_bar_wait
+        self.delayed_trend_values = delayed_trend_values
         self.url = ""
         self.body_text = ""
         self.translation_enabled = False
@@ -558,6 +571,25 @@ class SourceAndTrendTests(unittest.TestCase):
         with self.assertRaisesRegex(TrendDataEmpty, "数据为空"):
             read_7d_gmv_trend(page)
 
+    def test_read_7d_gmv_trend_waits_for_slowly_rendered_bars(self) -> None:
+        page = FakeEchoTikPage(
+            [],
+            {},
+            trend_values=[],
+            delayed_trend_values=[10, 20, 30, 40, 50, 60, 70],
+        )
+
+        self.assertEqual(
+            read_7d_gmv_trend(page),
+            [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0],
+        )
+
+    def test_read_7d_gmv_trend_keeps_bar_wait_failures_operational(self) -> None:
+        page = FakeEchoTikPage([], {}, failing_bar_wait=True)
+
+        with self.assertRaisesRegex(RuntimeError, "趋势数据 DOM 读取失败"):
+            read_7d_gmv_trend(page)
+
     def test_read_7d_gmv_trend_rejects_malformed_series_as_operational(self) -> None:
         for values in (
             [1, 2, 3, 4, 5, 6],
@@ -710,6 +742,11 @@ class SourceAndTrendTests(unittest.TestCase):
             "https:///product/1",
             "//attacker.example/product/1",
             "https://user:password@echotik.live/product/1",
+            r"\attacker.example\product\1",
+            r"\\attacker.example\product\1",
+            r"/\attacker.example/product/1",
+            r"https:\attacker.example\product\1",
+            "/%5c%5cattacker.example/product/1",
         ):
             with self.subTest(unsafe_url=unsafe_url):
                 row = echotik_row(1, 10.0)
@@ -871,6 +908,24 @@ class SourceAndTrendTests(unittest.TestCase):
             page.category_actions,
             [("hover", "Home"), ("click", "Kitchen")],
         )
+        self.assertEqual(
+            [url for url in page.navigations if "/product/" in url],
+            [],
+        )
+
+    def test_echotik_translation_challenge_stops_even_when_no_rows_are_added(self) -> None:
+        category = EchoTikCategory(("Home", "Kitchen"), "123456")
+        row = echotik_row(1, 10.0)
+        row["translated"] = ""
+        page = FakeEchoTikPage(
+            [row],
+            {"Kitchen": category.category_id},
+            verification_on_translation="Please complete the CAPTCHA",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "EchoTik 出现人工验证"):
+            scrape_echotik(FakeEchoTikContext(page), self.make_config((category,)))
+
         self.assertEqual(
             [url for url in page.navigations if "/product/" in url],
             [],

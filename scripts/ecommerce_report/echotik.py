@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import pandas as pd
 
@@ -266,7 +266,12 @@ def _normalize_detail_url(
     if detail_url is None or not str(detail_url).strip():
         return None
     raw_url = str(detail_url).strip()
-    if any(character.isspace() for character in raw_url):
+    decoded_url = unquote(raw_url)
+    if (
+        "\\" in raw_url
+        or "\\" in decoded_url
+        or any(character.isspace() for character in decoded_url)
+    ):
         raise RuntimeError("EchoTik 商品详情链接不安全")
     try:
         raw_parsed = urlparse(raw_url)
@@ -359,6 +364,7 @@ def scrape_echotik(
                 rows = page.locator("tr")
                 row_count = rows.count()
                 if row_count <= 1:
+                    _raise_if_human_verification(page)
                     break
 
                 page_rows: list[tuple[int, list[str], str, str | None]] = []
@@ -393,6 +399,8 @@ def scrape_echotik(
                     except ValueError:
                         continue
 
+                _raise_if_human_verification(page)
+
                 added = 0
                 for row_index, cells, product_name, detail_url in page_rows:
                     translated_name = translated_titles.get(row_index)
@@ -407,6 +415,7 @@ def scrape_echotik(
                     added += 1
 
                 if page_number == active_pages_per_category or added == 0:
+                    _raise_if_human_verification(page)
                     break
                 _raise_if_human_verification(page)
                 try:
@@ -422,11 +431,11 @@ def scrape_echotik(
         for product in select_top_detail_rows(
             products, ECHOTIK_ADAPTER.display_name, active_detail_limit
         ):
+            _raise_if_human_verification(page, detail_stage=True)
             detail_url = product["detail_url"]
             if not detail_url:
                 product["diagnostic"] = "数据为空"
                 continue
-            _raise_if_human_verification(page, detail_stage=True)
             page.goto(detail_url, wait_until="domcontentloaded", timeout=30_000)
             _wait(page, "detail")
             _raise_if_human_verification(page, detail_stage=True)
@@ -434,6 +443,7 @@ def scrape_echotik(
                 product["gmv_trend_7d"] = read_7d_gmv_trend(page)
             except TrendDataEmpty:
                 product["diagnostic"] = "数据为空"
+        _raise_if_human_verification(page)
     finally:
         page.close()
     return pd.DataFrame(products)

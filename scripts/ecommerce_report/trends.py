@@ -31,9 +31,14 @@ def read_7d_gmv_trend(page) -> list[float]:
         raise RuntimeError("EchoTik 趋势控件操作失败") from error
     try:
         daily_bars = sales.locator("path[name='日销售额']")
+        try:
+            daily_bars.first.wait_for(state="visible", timeout=15_000)
+        except Exception as wait_error:
+            if daily_bars.count() == 0:
+                raise TrendDataEmpty(_EMPTY_TREND_MESSAGE) from wait_error
+            raise
         if daily_bars.count() == 0:
             raise TrendDataEmpty(_EMPTY_TREND_MESSAGE)
-        daily_bars.first.wait_for(state="visible", timeout=15_000)
         values = daily_bars.evaluate_all(
             """bars => bars.map(node => {
                 const fiberKey = Object.keys(node).find(key => key.startsWith('__reactFiber'));

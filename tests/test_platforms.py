@@ -221,6 +221,7 @@ class PlatformRegistryTests(unittest.TestCase):
             "javascript:alert(1)",
             "data:text/html,malicious",
             "https:///products/42",
+            "https://user:password@marketpulse.example/products/42",
         )
         for invalid_url in invalid_urls:
             with self.subTest(url=invalid_url):

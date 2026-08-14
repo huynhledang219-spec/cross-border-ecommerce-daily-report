@@ -161,7 +161,12 @@ def _is_absolute_http_url(value: str) -> bool:
         parsed.port
     except ValueError:
         return False
-    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def _is_missing_optional_value(value: Any) -> bool:
