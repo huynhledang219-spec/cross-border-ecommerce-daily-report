@@ -8,11 +8,14 @@ pages_per_category: 10
 
 # Sign in manually in the isolated browser profile the first time Chrome opens.
 # Before adding a category, an Agent must confirm its full path and ID on a visible EchoTik page.
-echotik_categories:
-  - path: ["宠物用品", "猫狗配件", "猫狗清洁美容"]
-    id: "816392"
-  - path: ["宠物用品", "猫狗配件", "猫狗服饰"]
-    id: "813960"
+primary_platform:
+  adapter: echotik
+  categories:
+    - path: ["宠物用品", "猫狗配件", "猫狗清洁美容"]
+      id: "816392"
+    - path: ["宠物用品", "猫狗配件", "猫狗服饰"]
+      id: "813960"
+  options: {}
 
 # Before adding a category, an Agent must confirm the Amazon URL.
 amazon_categories:

@@ -9,6 +9,24 @@ from scripts.ecommerce_report.browser import (
     open_echotik_context,
 )
 from scripts.ecommerce_report.config import AmazonCategory, EchoTikCategory, RuntimeConfig
+from scripts.ecommerce_report.platforms import (
+    PlatformAdapterRegistry,
+    PlatformCapabilities,
+    PrimaryPlatformConfig,
+)
+
+
+class FakeAdapter:
+    key = "marketpulse"
+    display_name = "MarketPulse"
+    capabilities = PlatformCapabilities(True, True, True, True)
+
+    def validate_config(self, config: PrimaryPlatformConfig) -> None:
+        if not config.categories:
+            raise ValueError("MarketPulse requires at least one category")
+
+    def collect(self, context, config, *, detail_limit, trend_days, pages_per_category):
+        raise AssertionError("configuration loading must not collect data")
 
 
 class PublicSkillDocumentationTests(unittest.TestCase):
@@ -59,6 +77,95 @@ class ConfigAndBrowserTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def write_yaml(self, content: str) -> Path:
+        path = self.base / "generated-config.yaml"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_default_primary_platform_is_echotik(self) -> None:
+        config = RuntimeConfig.from_mapping(self.base, {})
+
+        self.assertEqual(config.primary_platform.adapter, "echotik")
+        self.assertEqual(config.primary_platform.categories[0]["id"], "816392")
+
+    def test_new_primary_platform_block_loads_registered_adapter(self) -> None:
+        path = self.write_yaml(
+            "primary_platform:\n"
+            "  adapter: marketpulse\n"
+            "  categories:\n"
+            "    - path: [Home, Kitchen]\n"
+            '      id: "42"\n'
+            "  options:\n"
+            "    region: US\n"
+        )
+
+        config = RuntimeConfig.load(
+            path,
+            registry=PlatformAdapterRegistry((FakeAdapter(),)),
+        )
+
+        self.assertEqual(config.primary_platform.adapter, "marketpulse")
+        self.assertEqual(config.primary_platform.options, {"region": "US"})
+
+    def test_selected_adapter_validates_configuration_during_load(self) -> None:
+        path = self.write_yaml(
+            "primary_platform:\n"
+            "  adapter: marketpulse\n"
+            "  categories: []\n"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "MarketPulse requires at least one category"
+        ):
+            RuntimeConfig.load(
+                path,
+                registry=PlatformAdapterRegistry((FakeAdapter(),)),
+            )
+
+    def test_legacy_echotik_categories_migrate_in_memory(self) -> None:
+        config = RuntimeConfig.from_mapping(
+            self.base,
+            {"echotik_categories": [{"path": ["Home", "Kitchen"], "id": "123456"}]},
+        )
+
+        self.assertEqual(config.primary_platform.adapter, "echotik")
+        self.assertEqual(config.primary_platform.categories[0]["id"], "123456")
+
+    def test_configuration_rejects_adapter_executable_path(self) -> None:
+        path = self.write_yaml(
+            "primary_platform:\n"
+            "  adapter: C:/temp/adapter.py\n"
+            "  categories:\n"
+            "    - path: [Home, Kitchen]\n"
+            '      id: "42"\n'
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown primary platform adapter"):
+            RuntimeConfig.load(path)
+
+    def test_configuration_rejects_ambiguous_legacy_and_new_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            RuntimeConfig.from_mapping(
+                self.base,
+                {
+                    "primary_platform": {"adapter": "echotik", "categories": []},
+                    "echotik_categories": [],
+                },
+            )
+
+    def test_primary_platform_rejects_unsupported_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown primary_platform field: module"):
+            RuntimeConfig.from_mapping(
+                self.base,
+                {
+                    "primary_platform": {
+                        "adapter": "echotik",
+                        "categories": [],
+                        "module": "remote.module:Adapter",
+                    }
+                },
+            )
 
     def test_relative_paths_resolve_from_the_configuration_directory(self) -> None:
         """A resolver change using the working directory would break this test."""
