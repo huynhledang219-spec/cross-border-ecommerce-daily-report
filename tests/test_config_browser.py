@@ -283,7 +283,7 @@ class ConfigAndBrowserTests(unittest.TestCase):
             self.base,
             {
                 "primary_platform": {
-                    "adapter": "echotik",
+                    "adapter": "marketpulse",
                     "categories": [
                         {"path": ["Home", "Kitchen"], "id": "123456"}
                     ],
@@ -300,14 +300,17 @@ class ConfigAndBrowserTests(unittest.TestCase):
 
         path = self.write_yaml(
             "primary_platform:\n"
-            "  adapter: echotik\n"
+            "  adapter: marketpulse\n"
             "  categories:\n"
             "    - path: [Home, Kitchen]\n"
             '      id: "123456"\n'
             "  options:\n"
             "    tags: !!set {sale: null, seasonal: null}\n"
         )
-        loaded = RuntimeConfig.load(path)
+        loaded = RuntimeConfig.load(
+            path,
+            registry=PlatformAdapterRegistry((FakeAdapter(),)),
+        )
         self.assertEqual(
             loaded.primary_platform.options["tags"],
             frozenset({"sale", "seasonal"}),

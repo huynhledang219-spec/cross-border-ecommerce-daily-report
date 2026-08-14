@@ -27,6 +27,8 @@ class EchoTikAdapter:
     def validate_config(self, config: PrimaryPlatformConfig) -> None:
         if config.adapter != self.key:
             raise ValueError("EchoTik adapter requires the echotik key")
+        if config.options:
+            raise ValueError("EchoTik does not support options")
         _parse_echotik_categories(config.categories)
 
     def collect(

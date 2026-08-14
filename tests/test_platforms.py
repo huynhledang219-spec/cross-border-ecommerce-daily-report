@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -9,6 +11,7 @@ from scripts.ecommerce_report.browser import (
     open_platform_context,
 )
 from scripts.ecommerce_report.echotik import ECHOTIK_ADAPTER
+from scripts.ecommerce_report.config import RuntimeConfig
 from scripts.ecommerce_report.platforms import (
     PlatformAdapterRegistry,
     PlatformCapabilities,
@@ -55,6 +58,33 @@ class PlatformRegistryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "digits only"):
             ECHOTIK_ADAPTER.validate_config(config)
+
+    def test_echotik_adapter_rejects_unsupported_options(self) -> None:
+        config = PrimaryPlatformConfig(
+            adapter="echotik",
+            categories=({"path": ["Home", "Kitchen"], "id": "123456"},),
+            options={"region": "US"},
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not support options"):
+            ECHOTIK_ADAPTER.validate_config(config)
+
+    def test_runtime_config_load_rejects_unsupported_echotik_options(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.yaml"
+            config_path.write_text(
+                "primary_platform:\n"
+                "  adapter: echotik\n"
+                "  categories:\n"
+                "    - path: [Home, Kitchen]\n"
+                '      id: "123456"\n'
+                "  options:\n"
+                "    region: US\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "does not support options"):
+                RuntimeConfig.load(config_path)
 
     def test_default_registry_resolves_echotik_with_complete_capabilities(self) -> None:
         adapter = build_default_registry().resolve("echotik")
