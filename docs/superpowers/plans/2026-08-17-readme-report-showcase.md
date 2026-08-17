@@ -30,7 +30,7 @@
 - Use without modifying: `assets/report-template.xlsx` — source of the visible report structure.
 - Temporary only: `$env:TEMP/cross-border-report-showcase/` — synthetic workbook, artifact-tool render, decoration-only background, and compositing script.
 
-## Task 1: Lock the Public Image Contract with a Failing Test
+## Task 1: Build and Integrate the Sanitized README Showcase
 
 **Files:**
 - Modify: `tests/test_public_asset.py`
@@ -107,7 +107,7 @@ git add -- tests/test_public_asset.py
 git commit -m "test: define README showcase contract"
 ```
 
-## Task 2: Produce the Deterministic Sanitized Report Render
+### Phase 2: Produce the Deterministic Sanitized Report Render
 
 **Files:**
 - Use without modifying: `assets/report-template.xlsx`
@@ -202,7 +202,7 @@ Run the builder with the loader-provided Node executable from the temporary dire
 
 Do not continue if the template import changes the public template file or if the render contains corrupted text.
 
-## Task 3: Build the Final 1920×1080 Showcase Image
+### Phase 3: Build the Final 1920×1080 Showcase Image
 
 **Files:**
 - Temporary create: `$env:TEMP/cross-border-report-showcase/background.png`
@@ -258,7 +258,7 @@ python -m unittest tests.test_public_asset.PublicSkillGuidanceTests.test_readme_
 
 Expected: still `FAIL`, now only because README does not yet contain the image reference.
 
-## Task 4: Add the Showcase to the English README
+### Phase 4: Add the Showcase to the English README
 
 **Files:**
 - Modify: `README.md`
@@ -296,7 +296,7 @@ git add -- assets/readme/report-showcase.png README.md
 git commit -m "docs: add sanitized report showcase"
 ```
 
-## Task 5: Final Privacy, Visual, and Repository Verification
+## Task 2: Final Privacy, Visual, and Repository Verification
 
 **Files:**
 - Verify: `assets/readme/report-showcase.png`
