@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+import struct
 import subprocess
 import unittest
 import xml.etree.ElementTree as ET
@@ -22,6 +23,7 @@ from scripts.ecommerce_report.workbook import REPORT_HEADERS, write_report
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 ASSET_PATH = REPOSITORY_ROOT / "assets" / "report-template.xlsx"
+README_SHOWCASE_PATH = REPOSITORY_ROOT / "assets" / "readme" / "report-showcase.png"
 APPROVED_HEADERS = (
     "排名",
     "近7天重点选品",
@@ -184,6 +186,26 @@ def _header_style_is_approved(cell) -> bool:
             cell.protection.hidden is False,
         )
     )
+
+
+def _read_png_chunks(path: Path) -> tuple[int, int, tuple[str, ...]]:
+    payload = path.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise AssertionError("README showcase is not a PNG")
+    cursor = 8
+    width = height = 0
+    chunks: list[str] = []
+    while cursor < len(payload):
+        length = struct.unpack(">I", payload[cursor : cursor + 4])[0]
+        chunk_type = payload[cursor + 4 : cursor + 8].decode("ascii")
+        chunk_data = payload[cursor + 8 : cursor + 8 + length]
+        chunks.append(chunk_type)
+        if chunk_type == "IHDR":
+            width, height = struct.unpack(">II", chunk_data[:8])
+        cursor += 12 + length
+        if chunk_type == "IEND":
+            break
+    return width, height, tuple(chunks)
 
 
 class PublicWorkbookAssetTests(unittest.TestCase):
@@ -491,6 +513,22 @@ class PublicWorkbookAssetTests(unittest.TestCase):
 
 
 class PublicSkillGuidanceTests(unittest.TestCase):
+    def test_readme_showcase_is_exact_sanitized_png_and_linked(self) -> None:
+        self.assertTrue(README_SHOWCASE_PATH.is_file(), "README showcase image is absent")
+        width, height, chunks = _read_png_chunks(README_SHOWCASE_PATH)
+        self.assertEqual((width, height), (1920, 1080))
+        self.assertLess(README_SHOWCASE_PATH.stat().st_size, 3_000_000)
+        self.assertTrue(
+            {"tEXt", "zTXt", "iTXt", "eXIf"}.isdisjoint(chunks),
+            "README showcase contains textual or EXIF metadata",
+        )
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "![Sanitized cross-border e-commerce daily report showcase]"
+            "(assets/readme/report-showcase.png)",
+            readme,
+        )
+
     def test_tracked_public_text_has_no_literal_private_absolute_paths(self) -> None:
         portable_examples = (
             '$codexHome = $env:CODEX_HOME',
