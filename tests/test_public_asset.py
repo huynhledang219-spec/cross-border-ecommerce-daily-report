@@ -571,7 +571,70 @@ class PublicSkillGuidanceTests(unittest.TestCase):
         self.assertIn("unchanged across registered adapters", report_schema)
         self.assertIn("primary_platform:", config_example)
         self.assertIn("adapter: echotik", config_example)
-        self.assertNotIn("README.md", {path.name for path in REPOSITORY_ROOT.iterdir()})
+
+    def test_public_readme_is_complete_english_and_portable(self) -> None:
+        readme_path = REPOSITORY_ROOT / "README.md"
+        self.assertTrue(readme_path.is_file(), "public README is absent")
+        readme = readme_path.read_text(encoding="utf-8")
+
+        self.assertIsNone(
+            re.search(r"[\u3400-\u9fff]", readme),
+            "public README must remain English-only",
+        )
+        self.assertFalse(
+            any(pattern.search(readme) for pattern in PRIVATE_ABSOLUTE_PATH_PATTERNS),
+            "public README contains a private absolute path",
+        )
+
+        required_headings = (
+            "# Cross-Border E-Commerce Daily Report",
+            "## What it does",
+            "## Key capabilities",
+            "## Workflow",
+            "## Requirements",
+            "## Installation",
+            "## Quick start",
+            "## Category configuration",
+            "## Daily scheduling",
+            "## Workbook contract",
+            "## Replacing EchoTik",
+            "## Security and privacy",
+            "## Troubleshooting",
+            "## Known limitations",
+            "## Repository structure",
+            "## Testing",
+            "## Contributing",
+            "## License",
+        )
+        for heading in required_headings:
+            self.assertIn(heading, readme)
+
+        required_contract_text = (
+            "EchoTik is the bundled default primary platform",
+            "Amazon remains a required supplementary source",
+            "equivalent-capability gate",
+            "Top 20",
+            "seven-day GMV",
+            "exactly seven",
+            "human verification",
+            'python .\\scripts\\run_report.py --config "$reportConfig"',
+            'python .\\scripts\\run_daily.py --config "$reportConfig"',
+            "install_scheduled_task.ps1",
+            "verify_report",
+            "python -m unittest discover -s tests -v",
+        )
+        for required_text in required_contract_text:
+            self.assertIn(required_text, readme)
+
+        relative_targets = re.findall(
+            r"\[[^\]]+\]\((?!https?://|#)([^)#]+)(?:#[^)]+)?\)", readme
+        )
+        self.assertTrue(relative_targets, "README must link to repository documentation")
+        for relative_target in relative_targets:
+            self.assertTrue(
+                (REPOSITORY_ROOT / relative_target).exists(),
+                f"README link target does not exist: {relative_target}",
+            )
 
     def test_skill_frontmatter_uses_the_approved_platform_aware_trigger(self) -> None:
         skill = (REPOSITORY_ROOT / "SKILL.md").read_text(encoding="utf-8")
