@@ -4,6 +4,10 @@ A configurable Codex Skill for producing daily cross-border e-commerce product-i
 
 EchoTik is the bundled default primary platform. Amazon remains a required supplementary source.
 
+![Sanitized cross-border e-commerce daily report showcase](assets/readme/report-showcase.png)
+
+*Sanitized demonstration data. No live account, product, or sales records are included.*
+
 ## What it does
 
 The Skill turns visible, category-scoped product research into a local Excel workbook that can be reviewed, compared, and archived each day. It keeps collection, enrichment, workbook generation, and verification behind explicit gates so that a file is not treated as successful merely because it exists.
