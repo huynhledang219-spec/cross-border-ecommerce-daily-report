@@ -4,7 +4,7 @@
 
 **Goal:** Add one exact 1920×1080, privacy-safe README image that faithfully demonstrates the packaged report layout in the approved navy-and-gold visual direction.
 
-**Architecture:** Build a synthetic workbook only in a temporary directory by importing the packaged public template with `@oai/artifact-tool`, preserving the template's visible structure and adding deterministic fictional rows and seven-day sparklines. Render the table, combine it with an image-generated decoration-only background using bundled Pillow, strip PNG metadata, then track only the final image and reference it from the English README.
+**Architecture:** Import and render the packaged public template read-only with `@oai/artifact-tool`, then use that render as the exact geometry and style reference for a deterministic synthetic report image. Draw fictional rows and seven-day trends with bundled Pillow, combine the report with an image-generated decoration-only background, strip PNG metadata, then track only the final image and reference it from the English README.
 
 **Tech Stack:** `@oai/artifact-tool` 2.8.6+, bundled Node.js, bundled Python and Pillow, built-in image generation, Python `unittest`, Git.
 
@@ -16,7 +16,7 @@
 - Preserve the public template's header order, yellow header treatment, pale-green inventory row, alternating row treatment, and diagnosis-column seven-day trend pattern.
 - The inventory row appears first, followed by EchoTik demonstration rows and Amazon demonstration rows.
 - `DEMO DATA` is the only text rendered by image generation. All report text, numbers, and trends are rendered deterministically.
-- Do not track temporary XLSX files, intermediate renders, generated backgrounds, builders, private paths, or image metadata.
+- Do not create or modify an XLSX. Do not track intermediate renders, generated backgrounds, builders, private paths, or image metadata.
 - Do not change runtime collectors, adapters, browser automation, workbook production logic, scheduling, or configuration behavior.
 - Do not upload a GitHub social preview and do not push without separate user authorization.
 
@@ -28,7 +28,7 @@
 - Modify: `README.md` — add one English-captioned relative image immediately after the introduction.
 - Modify: `tests/test_public_asset.py` — enforce the image path, PNG dimensions, metadata boundary, size limit, and README reference.
 - Use without modifying: `assets/report-template.xlsx` — source of the visible report structure.
-- Temporary only: `$env:TEMP/cross-border-report-showcase/` — synthetic workbook, artifact-tool render, decoration-only background, and compositing script.
+- Temporary only: `$env:TEMP/cross-border-report-showcase/` — read-only artifact-tool render, deterministic report layer, decoration-only background, and compositing scripts.
 
 ## Task 1: Build and Integrate the Sanitized README Showcase
 
@@ -107,39 +107,30 @@ git add -- tests/test_public_asset.py
 git commit -m "test: define README showcase contract"
 ```
 
-### Phase 2: Produce the Deterministic Sanitized Report Render
+### Phase 2: Produce the Deterministic Sanitized Report Layer
 
 **Files:**
 - Use without modifying: `assets/report-template.xlsx`
-- Temporary create: `$env:TEMP/cross-border-report-showcase/build_showcase.mjs`
-- Temporary create: `$env:TEMP/cross-border-report-showcase/sanitized-showcase.xlsx`
+- Temporary create: `$env:TEMP/cross-border-report-showcase/render_template.mjs`
+- Temporary create: `$env:TEMP/cross-border-report-showcase/draw_report.py`
+- Temporary create: `$env:TEMP/cross-border-report-showcase/template-reference.png`
 - Temporary create: `$env:TEMP/cross-border-report-showcase/report-render.png`
 
 **Interfaces:**
-- Consumes: packaged public template and loader-provided Node executable and `node_modules` path.
-- Produces: a temporary synthetic workbook plus an exact report-range PNG with no private input.
+- Consumes: packaged public template read-only, loader-provided Node executable and `node_modules` path, and loader-provided Python with Pillow.
+- Produces: an exact deterministic report-layer PNG with no private input and no authored XLSX.
 
 - [ ] **Step 1: Reload bundled dependency paths and create an isolated work directory**
 
 Call `load_workspace_dependencies`, record the returned Node executable and `node_modules` directory, then create `$env:TEMP/cross-border-report-showcase`. Create a Windows junction named `node_modules` inside that directory that targets only the loader-provided dependency directory. Do not modify the dependency bundle.
 
-- [ ] **Step 2: Read the required spreadsheet instructions and inspect the template read-only**
+- [ ] **Step 2: Read the required spreadsheet instructions and render the template read-only**
 
-Read `spreadsheets/SKILL.md`, `style_guidelines.md`, `artifact_tool_docs/API_QUICK_START.md`, and `features/charts.md` completely. Import `assets/report-template.xlsx`, inspect `Sheet1!A1:V4` for values and computed styles, inspect its drawings, and render `Sheet1!A1:O4`. Visually confirm the yellow header, green inventory row, alternating data rows, hidden detail/helper columns, and diagnosis-column drawing position before authoring.
+Read `spreadsheets/SKILL.md`, `style_guidelines.md`, `artifact_tool_docs/API_QUICK_START.md`, and `features/charts.md` completely. Import `assets/report-template.xlsx` read-only, inspect `Sheet1!A1:V4` for values and computed styles, inspect its drawings, and render `Sheet1!A1:O4` to `template-reference.png`. Visually confirm the yellow header, green inventory row, alternating data rows, hidden detail/helper columns, and diagnosis-column drawing position. Do not export, edit, or save a workbook.
 
-- [ ] **Step 3: Mark the spreadsheet edit operation exactly once**
+- [ ] **Step 3: Create the deterministic report-layer compositor**
 
-Immediately before the first authoring command, run the spreadsheet skill's required marker as an edit operation with one expected XLSX output:
-
-```powershell
-node container_tools/mark_artifact_operation_started.mjs --operation-kind edit --expected-output-count 1 --output-format xlsx
-```
-
-Expected: exit code `0`. If the required marker or bundled artifact runtime is unavailable, stop and report the tooling blocker; do not substitute another spreadsheet library.
-
-- [ ] **Step 4: Create the one-off artifact-tool builder**
-
-Create one executable `build_showcase.mjs` in the temporary directory. It must import the public template, remove the template's empty drawing, extend the existing row styles by copying row 3 and row 4 in an alternating pattern, write these exact fictional records to `A2:O9`, write the matching seven values to `P:V`, add line sparklines only for EchoTik rows, inspect the populated table, scan formula errors, render `A1:O9`, and export the temporary workbook.
+Create one temporary `draw_report.py` with the loader-provided Python and Pillow. It must use `template-reference.png` as the exact header, width, color, and border reference; extend the body to eight fictional rows; draw all readable text and numbers with installed Chinese-capable Windows fonts; draw four distinct seven-point trend lines in the diagnosis column; and save an RGB `report-render.png` without metadata.
 
 Use these fictional rows in order:
 
@@ -163,44 +154,35 @@ const trends = [
 ];
 ```
 
-Use the documented APIs:
+Use the documented read-only APIs only:
 
 ```js
 const input = await FileBlob.load(templatePath);
 const workbook = await SpreadsheetFile.importXlsx(input);
-const sheet = workbook.worksheets.getItem("Sheet1");
-sheet.deleteAllDrawings();
-for (let row = 5; row <= 9; row += 1) {
-  const source = row % 2 === 1 ? sheet.getRange("A3:V3") : sheet.getRange("A4:V4");
-  source.copyTo(sheet.getRange(`A${row}:V${row}`), "all");
-}
-sheet.getRange("A2:O9").values = records;
-sheet.getRange("P3:V6").values = trends;
-for (let row = 3; row <= 6; row += 1) {
-  sheet.getRange(`O${row}`).sparklines.add(
-    "line",
-    sheet.getRange(`P${row}:V${row}`),
-    {seriesColor: "#0B4F8A", markers: {show: true}}
-  );
-}
+const inspection = await workbook.inspect({
+  kind: "table,computedStyle,drawing",
+  sheetId: "Sheet1",
+  range: "A1:V4",
+  maxChars: 6000,
+});
 ```
 
-Render with:
+Render the unchanged template with:
 
 ```js
 const preview = await workbook.render({
   sheetName: "Sheet1",
-  range: "A1:O9",
+  range: "A1:O4",
   scale: 1.5,
   format: "png",
 });
 ```
 
-- [ ] **Step 5: Run the builder and verify the temporary workbook and render**
+- [ ] **Step 4: Run the read-only renderer and verify the deterministic report layer**
 
-Run the builder with the loader-provided Node executable from the temporary directory. Inspect `A1:V9`, scan `#REF!|#DIV/0!|#VALUE!|#NAME\?|#N/A`, and save `report-render.png`. Visually confirm exact Chinese headers, the inventory-first order, EchoTik-before-Amazon grouping, four distinct sparklines, readable values, and no clipping.
+Run `render_template.mjs` with the loader-provided Node executable, verify the template SHA-256 is unchanged before and after the read-only import/render, then run `draw_report.py` with the loader-provided Python. Visually confirm exact Chinese headers, the inventory-first order, EchoTik-before-Amazon grouping, four distinct trend lines, readable values, and no clipping.
 
-Do not continue if the template import changes the public template file or if the render contains corrupted text.
+Do not continue if the public template changes, the render contains corrupted text, or any XLSX is created in the temporary directory.
 
 ### Phase 3: Build the Final 1920×1080 Showcase Image
 
@@ -325,7 +307,7 @@ Run the installed Skill validator using the portable `CODEX_HOME` or `$HOME/.cod
 Confirm:
 
 - no tracked private absolute paths;
-- no credentials, cookies, tokens, browser profiles, private reports, or temporary XLSX files;
+- no credentials, cookies, tokens, browser profiles, private reports, or any newly created XLSX files;
 - no forbidden generated directories or cache files;
 - the PNG has no `tEXt`, `zTXt`, `iTXt`, or `eXIf` chunks;
 - the final image contains no real account, store, product, or sales information.

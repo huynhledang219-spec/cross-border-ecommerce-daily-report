@@ -43,14 +43,15 @@ The synthetic data should look internally varied and plausible: prices, ratings,
 
 ## Production Approach
 
-1. Generate a sanitized synthetic workbook outside the repository from the packaged public template.
-2. Render the exact workbook range with the approved spreadsheet tooling.
-3. Create or select a navy-and-gold decorative background consistent with the approved concept.
-4. Composite the deterministic workbook render onto the background without altering its readable contents.
-5. Save only the final sanitized PNG inside the repository.
-6. Add the image to `README.md` and add public-asset regression checks.
+1. Import and render the packaged public template read-only with the approved spreadsheet tooling.
+2. Use the rendered template as the deterministic geometry and style reference for a synthetic report image; do not create or modify an XLSX.
+3. Draw all fictional rows, Chinese text, metrics, and seven-day trends deterministically with bundled image tooling.
+4. Create or select a navy-and-gold decorative background consistent with the approved concept.
+5. Composite the deterministic report image onto the background without altering its readable contents.
+6. Save only the final sanitized PNG inside the repository.
+7. Add the image to `README.md` and add public-asset regression checks.
 
-No intermediate XLSX, browser data, generated-image scratch files, credentials, or private reports are committed.
+No intermediate XLSX is created. No browser data, generated-image scratch files, credentials, or private reports are committed.
 
 ## Repository Scope
 
