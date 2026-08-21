@@ -645,23 +645,24 @@ class PublicSkillGuidanceTests(unittest.TestCase):
             "public README contains a private absolute path",
         )
 
+        lines = readme.splitlines()
+        self.assertGreaterEqual(len(lines), 100)
+        self.assertLessEqual(len(lines), 140)
+        self.assertIn('<div align="center">', readme)
+        self.assertIn("Minimal Windows setup", readme)
+        self.assertEqual(readme.count("<details>"), 1)
+        self.assertEqual(readme.count("</details>"), 1)
+        self.assertEqual(readme.count("```powershell"), 1)
+
         required_headings = (
             "# Cross-Border E-Commerce Daily Report",
-            "## What it does",
-            "## Key capabilities",
-            "## Workflow",
-            "## Requirements",
-            "## Installation",
+            "## Why this Skill",
+            "## How it works",
             "## Quick start",
-            "## Category configuration",
-            "## Daily scheduling",
-            "## Workbook contract",
-            "## Replacing EchoTik",
-            "## Security and privacy",
-            "## Troubleshooting",
-            "## Known limitations",
-            "## Repository structure",
-            "## Testing",
+            "## Configuration and platform support",
+            "## Report guarantees",
+            "## Safety and limitations",
+            "## Documentation",
             "## Contributing",
             "## License",
         )
@@ -670,20 +671,39 @@ class PublicSkillGuidanceTests(unittest.TestCase):
 
         required_contract_text = (
             "EchoTik is the bundled default primary platform",
-            "Amazon remains a required supplementary source",
-            "equivalent-capability gate",
+            "Amazon remains the required supplementary source",
             "Top 20",
             "seven-day GMV",
-            "exactly seven",
-            "human verification",
-            'python .\\scripts\\run_report.py --config "$reportConfig"',
-            'python .\\scripts\\run_daily.py --config "$reportConfig"',
-            "install_scheduled_task.ps1",
+            "exactly seven daily sales-amount values",
+            "registered adapter",
+            "human-verification",
+            "outside the repository",
             "verify_report",
-            "python -m unittest discover -s tests -v",
+            "assets/readme/report-showcase.png",
+            "references/configuration.md",
+            "references/report-schema.md",
         )
         for required_text in required_contract_text:
             self.assertIn(required_text, readme)
+
+        removed_headings = (
+            "## Requirements",
+            "## Installation",
+            "## Category configuration",
+            "## Daily scheduling",
+            "## Workbook contract",
+            "## Replacing EchoTik",
+            "## Troubleshooting",
+            "## Known limitations",
+            "## Repository structure",
+            "## Testing",
+        )
+        for heading in removed_headings:
+            self.assertNotIn(heading, readme)
+
+        self.assertNotIn("python -m unittest discover", readme)
+        self.assertNotIn("quick_validate.py", readme)
+        self.assertNotIn("install_scheduled_task.ps1", readme)
 
         relative_targets = re.findall(
             r"\[[^\]]+\]\((?!https?://|#)([^)#]+)(?:#[^)]+)?\)", readme
