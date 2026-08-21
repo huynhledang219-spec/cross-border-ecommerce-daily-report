@@ -2,7 +2,7 @@
 
 # Cross-Border E-Commerce Daily Report
 
-**A configurable Codex Skill for verified daily product-intelligence workbooks from EchoTik and Amazon.**
+**A configurable Codex Skill that collects cross-border product intelligence, ranks the Top 20 products by seven-day GMV, and generates verified daily XLSX reports.**
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Windows](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white)
@@ -19,12 +19,29 @@ EchoTik is the bundled default primary platform. Amazon remains the required sup
 
 ## Why this Skill
 
-- Confirms requested product categories through a visible browser workflow.
-- Ranks the primary platform's Top 20 products by descending seven-day GMV.
-- Adds trends from exactly seven daily sales-amount values when data is available.
-- Preserves complete Amazon product titles and complete Chinese translations.
-- Generates a controlled XLSX layout with consistent columns, styles, links, and charts.
-- Rejects incomplete output and records concise, sanitized failure reasons.
+### Verified multi-source collection
+
+- Confirms configurable product categories through a visible, isolated Chrome workflow before collection.
+- Uses EchoTik as the bundled default platform and Amazon as the required supplementary market source.
+- Supports replacement product-intelligence platforms through tested adapters that preserve the same report capabilities.
+
+### Top-20 product intelligence
+
+- Ranks up to 20 primary-platform products by descending seven-day GMV.
+- Adds trends from exactly seven daily sales-amount values, plus product ratings, reviews, related videos, related creators, prices, GMV, and detail links.
+- Preserves complete original Amazon titles and complete Chinese translations.
+
+### Daily workbook automation
+
+- Generates a template-preserving XLSX with controlled columns, styles, hyperlinks, hidden helper data, and individual trend charts.
+- Supports scheduled Windows execution, wake-to-run, missed-run recovery, and same-day retries after failure.
+- Keeps inventory first, followed by the primary platform and Amazon in a consistent source order.
+
+### Verification, recovery, and privacy
+
+- Independently validates required sources, Top-20 ordering, chart data, formulas, links, layout, and sensitive-content boundaries before reporting success.
+- Stops safely when login challenges, CAPTCHA, or human verification appears.
+- Keeps credentials, cookies, browser profiles, local configuration, generated reports, and sanitized failure records outside Git.
 
 ## How it works
 
