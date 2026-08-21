@@ -24,6 +24,7 @@ from scripts.ecommerce_report.workbook import REPORT_HEADERS, write_report
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 ASSET_PATH = REPOSITORY_ROOT / "assets" / "report-template.xlsx"
 README_SHOWCASE_PATH = REPOSITORY_ROOT / "assets" / "readme" / "report-showcase.png"
+SOCIAL_PREVIEW_PATH = REPOSITORY_ROOT / "assets" / "readme" / "social-preview.png"
 APPROVED_HEADERS = (
     "排名",
     "近7天重点选品",
@@ -206,6 +207,13 @@ def _read_png_chunks(path: Path) -> tuple[int, int, tuple[str, ...]]:
         if chunk_type == "IEND":
             break
     return width, height, tuple(chunks)
+
+
+def _read_png_color_type(path: Path) -> int:
+    payload = path.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n" or payload[12:16] != b"IHDR":
+        raise AssertionError("social preview is not a structurally valid PNG")
+    return payload[25]
 
 
 class PublicWorkbookAssetTests(unittest.TestCase):
@@ -513,6 +521,19 @@ class PublicWorkbookAssetTests(unittest.TestCase):
 
 
 class PublicSkillGuidanceTests(unittest.TestCase):
+    def test_github_social_preview_is_exact_opaque_metadata_free_png(self) -> None:
+        self.assertTrue(SOCIAL_PREVIEW_PATH.is_file(), "social preview image is absent")
+        width, height, chunks = _read_png_chunks(SOCIAL_PREVIEW_PATH)
+        self.assertEqual((width, height), (1280, 640))
+        self.assertEqual(_read_png_color_type(SOCIAL_PREVIEW_PATH), 2)
+        self.assertLess(SOCIAL_PREVIEW_PATH.stat().st_size, 1_000_000)
+        self.assertEqual(chunks[0], "IHDR")
+        self.assertEqual(chunks[-1], "IEND")
+        self.assertTrue(
+            set(chunks) <= {"IHDR", "IDAT", "IEND"},
+            "social preview contains metadata, transparency, or ancillary PNG chunks",
+        )
+
     def test_readme_showcase_is_exact_sanitized_png_and_linked(self) -> None:
         self.assertTrue(README_SHOWCASE_PATH.is_file(), "README showcase image is absent")
         width, height, chunks = _read_png_chunks(README_SHOWCASE_PATH)
